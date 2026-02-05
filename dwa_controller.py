@@ -1084,23 +1084,19 @@ class DWANavController(Node):
                             motion_mode = "组合"
                             
                             if pure_motion:
-                                angular_threshold = 0.2  # 角速度阈值
-                                linear_threshold = 0.08  # 线速度阈值
+                                # 更严格的纯运动：有转向就不前进
+                                angular_threshold = 0.1  # 角速度阈值（降低）
                                 
-                                if abs(best_w) > angular_threshold and best_v < linear_threshold:
-                                    # 角速度大、线速度小 → 纯旋转
+                                if abs(best_w) > angular_threshold:
+                                    # 需要转向 → 纯旋转（不前进）
                                     cmd_vel.linear.x = 0.0
                                     cmd_vel.angular.z = best_w
                                     motion_mode = "纯旋转"
-                                elif best_v > linear_threshold and abs(best_w) < angular_threshold:
-                                    # 线速度大、角速度小 → 纯直行
+                                else:
+                                    # 不需要转向 → 纯直行
                                     cmd_vel.linear.x = best_v
                                     cmd_vel.angular.z = 0.0
                                     motion_mode = "纯直行"
-                                else:
-                                    # 两者都较大（急转弯）→ 允许组合
-                                    cmd_vel.linear.x = best_v
-                                    cmd_vel.angular.z = best_w
                             else:
                                 cmd_vel.linear.x = best_v
                                 cmd_vel.angular.z = best_w

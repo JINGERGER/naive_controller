@@ -1098,11 +1098,13 @@ class DWANavController(Node):
                                 if heading_error > angle_threshold:
                                     # 航向偏差大 → 纯旋转
                                     cmd_vel.linear.x = 0.0
-                                    # 使用方向锁定，避免左右摆动
-                                    if self.last_turn_dir == 0:
+                                    # 如果有避障锁定，跟随避障方向；否则用航向偏差
+                                    if self.bypass_direction != 0:
+                                        self.last_turn_dir = self.bypass_direction
+                                    elif self.last_turn_dir == 0:
                                         self.last_turn_dir = 1 if heading_error_raw > 0 else -1
                                     cmd_vel.angular.z = self.last_turn_dir * 0.5
-                                    motion_mode = f"纯旋转(偏差{math.degrees(heading_error):.0f}°)"
+                                    motion_mode = f"纯旋转(偏差{math.degrees(heading_error):.0f}°,{'左' if self.last_turn_dir > 0 else '右'})"
                                 else:
                                     # 航向偏差小 → 纯直行，重置方向锁
                                     self.last_turn_dir = 0

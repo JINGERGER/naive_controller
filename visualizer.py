@@ -120,9 +120,9 @@ class Visualizer(Node):
         self.ax.set_ylabel('Y (m)')
         self.ax.set_title('Robot Navigation Visualization')
         
-        # 固定坐标系为10x10，中心在(0,0)
-        self.ax.set_xlim(-5, 5)
-        self.ax.set_ylim(-5, 5)
+        # 固定坐标系为8x8，中心在(0,0)
+        self.ax.set_xlim(-4, 4)
+        self.ax.set_ylim(-4, 4)
 
         # 绘图元素
         self.robot_plot, = self.ax.plot([], [], 'bo', markersize=10,

@@ -1079,29 +1079,34 @@ class DWANavController(Node):
                                         f'[绕行] 强制最小前进速度 {min_bypass_vel}',
                                         throttle_duration_sec=1.0)
                             
-                            # === 纯运动模式：基于航向偏差判断 ===
+                            # === 纯运动模式：仅在无障碍时启用 ===
                             pure_motion = self.get_parameter('pure_motion_mode').value
-                            motion_mode = "组合"
+                            motion_mode = "DWA"
                             
-                            if pure_motion:
-                                # 计算到目标的航向偏差
+                            # 检查前方是否有障碍物（决定是否使用纯运动模式）
+                            front_clear_for_pure = self.min_obstacle_dist > 1.0  # 前方1米内无障碍
+                            
+                            if pure_motion and front_clear_for_pure:
+                                # 无障碍：使用纯运动模式
                                 target_yaw = math.atan2(dy, dx)
                                 heading_error = abs(self.normalize_angle(target_yaw - self.current_yaw))
                                 angle_threshold = self.get_parameter('pure_motion_angle_threshold').value
                                 
                                 if heading_error > angle_threshold:
-                                    # 航向偏差大 → 纯旋转（先对准目标）
+                                    # 航向偏差大 → 纯旋转
                                     cmd_vel.linear.x = 0.0
-                                    cmd_vel.angular.z = best_w if abs(best_w) > 0.1 else (0.5 if best_w >= 0 else -0.5)
+                                    cmd_vel.angular.z = 0.5 if self.normalize_angle(target_yaw - self.current_yaw) > 0 else -0.5
                                     motion_mode = f"纯旋转(偏差{math.degrees(heading_error):.0f}°)"
                                 else:
-                                    # 航向偏差小 → 纯直行（保持方向前进）
-                                    cmd_vel.linear.x = best_v if best_v > 0.05 else 0.15
+                                    # 航向偏差小 → 纯直行
+                                    cmd_vel.linear.x = best_v if best_v > 0.05 else 0.2
                                     cmd_vel.angular.z = 0.0
                                     motion_mode = "纯直行"
                             else:
+                                # 有障碍：使用DWA避障（允许组合运动）
                                 cmd_vel.linear.x = best_v
                                 cmd_vel.angular.z = best_w
+                                motion_mode = "DWA避障"
 
                             # 发布规划轨迹
                             if trajectory is not None:

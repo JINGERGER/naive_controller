@@ -875,13 +875,22 @@ class DWANavController(Node):
                         self.last_x = self.current_x
                         self.last_y = self.current_y
 
-                    # 紧急停止检测：如果障碍物太近，停止
+                    # 紧急停止检测：如果障碍物太近，停止前进但允许旋转脱困
                     if self.check_emergency_stop():
                         cmd_vel.linear.x = 0.0
-                        cmd_vel.angular.z = 0.0
-                        self.get_logger().warn(
-                            'Emergency stop! Obstacle too close!',
-                            throttle_duration_sec=1.0)
+                        # 计算脱困旋转方向：远离最近障碍物
+                        escape_direction = self.get_escape_direction()
+                        if escape_direction != 0:
+                            cmd_vel.angular.z = escape_direction * 1.5  # 快速旋转脱困
+                            self.get_logger().warn(
+                                f'Emergency! Rotating to escape '
+                                f'({"LEFT" if escape_direction > 0 else "RIGHT"})',
+                                throttle_duration_sec=0.5)
+                        else:
+                            cmd_vel.angular.z = 0.0
+                            self.get_logger().warn(
+                                'Emergency stop! No clear escape direction!',
+                                throttle_duration_sec=1.0)
                     # 卡住恢复：只旋转，不前进（避免穿墙）
                     elif self.stuck_count > self.stuck_threshold:
                         # 如果已有方向锁定，使用锁定方向；否则选择新方向
@@ -1110,6 +1119,48 @@ class DWANavController(Node):
             if edge_dist < emergency_edge_dist:
                 return True
         return False
+    
+    def get_escape_direction(self):
+        """计算脱困旋转方向：分析障碍物分布，选择空旷的方向"""
+        obstacle_radius = 0.15
+        emergency_dist = self.dwa_planner.robot_radius + obstacle_radius + 0.1
+        
+        left_danger = 0.0  # 左前方危险程度
+        right_danger = 0.0  # 右前方危险程度
+        
+        cos_yaw = math.cos(-self.current_yaw)
+        sin_yaw = math.sin(-self.current_yaw)
+        
+        for ox, oy in self.obstacles:
+            dx = ox - self.current_x
+            dy = oy - self.current_y
+            dist = math.sqrt(dx**2 + dy**2)
+            
+            # 只考虑近距离障碍物
+            if dist > emergency_dist * 2:
+                continue
+            
+            # 转换到机器人坐标系
+            local_x = dx * cos_yaw - dy * sin_yaw
+            local_y = dx * sin_yaw + dy * cos_yaw
+            
+            # 只考虑前方和侧前方的障碍物
+            if local_x > -0.2:
+                weight = 1.0 / max(dist, 0.1)
+                if local_y > 0:  # 左前方
+                    left_danger += weight
+                else:  # 右前方
+                    right_danger += weight
+        
+        # 选择危险较小的方向
+        if left_danger < right_danger:
+            return 1  # 左转
+        elif right_danger < left_danger:
+            return -1  # 右转
+        elif self.bypass_direction != 0:
+            return self.bypass_direction  # 保持当前绕行方向
+        else:
+            return 1  # 默认左转
 
     def check_front_clear(self):
         """检查前方是否有障碍物（用于恢复模式）"""

@@ -1212,7 +1212,7 @@ class DWANavController(Node):
     def get_front_clear_distance(self):
         """获取前方最近障碍物的距离"""
         obstacle_radius = 0.15
-        path_width = self.dwa_planner.robot_radius + 0.1  # 稍微宽一点的检测范围
+        path_width = 1.0  # 检测前方1米宽的通道
         min_distance = float('inf')
         
         cos_yaw = math.cos(-self.current_yaw)

@@ -52,6 +52,10 @@ class Visualizer(Node):
         # LaserScan 数据
         self.scan_points_x = []
         self.scan_points_y = []
+        # 前方120度 (±60°) 的scan点（用于实际判断）
+        self.front_scan_x = []
+        self.front_scan_y = []
+        self.scan_fov = math.radians(120)  # 前方120度
         self.show_scan = True  # 是否显示 scan 数据
 
         # 订阅话题
@@ -133,10 +137,14 @@ class Visualizer(Node):
                                                   label='DWA Plan')
         self.robot_arrow = None
 
-        # LaserScan 绘图元素（淡灰色点）
-        self.scan_plot, = self.ax.plot([], [], '.', color='lightgray',
-                                        markersize=2, alpha=0.6,
+        # LaserScan 绘图元素（黑色点 - 所有scan）
+        self.scan_plot, = self.ax.plot([], [], '.', color='black',
+                                        markersize=2, alpha=0.4,
                                         label='LaserScan')
+        # 前方120°的scan点（紫色 - 实际用于判断）
+        self.front_scan_plot, = self.ax.plot([], [], '.', color='purple',
+                                              markersize=3, alpha=0.8,
+                                              label='Front FOV')
         # LaserScan 射线（可选，默认关闭）
         self.scan_lines = None
         self.show_scan_rays = False  # 是否显示射线
@@ -214,10 +222,13 @@ class Visualizer(Node):
 
         self.scan_points_x = []
         self.scan_points_y = []
+        self.front_scan_x = []
+        self.front_scan_y = []
 
         angle = msg.angle_min
         cos_yaw = math.cos(self.robot_yaw)
         sin_yaw = math.sin(self.robot_yaw)
+        half_fov = self.scan_fov / 2  # ±60°
 
         for r in msg.ranges:
             # 跳过无效数据
@@ -235,6 +246,17 @@ class Visualizer(Node):
 
             self.scan_points_x.append(world_x)
             self.scan_points_y.append(world_y)
+
+            # 检查是否在前方±60°范围内
+            normalized_angle = angle
+            while normalized_angle > math.pi:
+                normalized_angle -= 2 * math.pi
+            while normalized_angle < -math.pi:
+                normalized_angle += 2 * math.pi
+            
+            if abs(normalized_angle) <= half_fov:
+                self.front_scan_x.append(world_x)
+                self.front_scan_y.append(world_y)
 
             angle += msg.angle_increment
 
@@ -300,11 +322,17 @@ class Visualizer(Node):
         else:
             self.dwa_trajectory_plot.set_data([], [])
 
-        # 更新LaserScan点云
+        # 更新LaserScan点云（黑色 - 所有scan）
         if self.show_scan and len(self.scan_points_x) > 0:
             self.scan_plot.set_data(self.scan_points_x, self.scan_points_y)
         else:
             self.scan_plot.set_data([], [])
+        
+        # 更新前方120°的scan点（紫色）
+        if self.show_scan and len(self.front_scan_x) > 0:
+            self.front_scan_plot.set_data(self.front_scan_x, self.front_scan_y)
+        else:
+            self.front_scan_plot.set_data([], [])
 
         # 移除旧的scan射线
         if self.scan_lines is not None:
@@ -360,7 +388,7 @@ class Visualizer(Node):
                      f'Position: ({self.robot_x:.2f}, {self.robot_y:.2f})\n'
                      f'Yaw: {math.degrees(self.robot_yaw):.1f}°\n'
                      f'Obstacles: {len(self.obstacles)}\n'
-                     f'Scan points: {len(self.scan_points_x)}')
+                     f'Scan: {len(self.scan_points_x)} (Front: {len(self.front_scan_x)})')
         self.state_text.set_text(state_text)
         self.state_text.set_bbox(dict(
             boxstyle='round',

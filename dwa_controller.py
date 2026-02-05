@@ -431,6 +431,7 @@ class DWANavController(Node):
         self.bypass_lock_count = 0  # 锁定计数器
         self.bypass_lock_threshold = 50  # 增加锁定时间，因为智能选择后应坚持
         self.last_angular_z = 0.0  # 上一次的角速度，用于平滑
+        self.last_turn_dir = 0  # 上一次的转向方向（防止左右摆动）
         self.last_distance = float('inf')  # 上一次到目标的距离
         self.min_obstacle_dist = float('inf')  # 最近障碍物距离
         self.initial_goal_angle = None  # 初始目标角度（用于检测是否绑过障碍物）
@@ -813,6 +814,7 @@ class DWANavController(Node):
         self.bypass_direction = 0
         self.bypass_lock_count = 0
         self.last_angular_z = 0.0
+        self.last_turn_dir = 0
         self.last_distance = float('inf')
         self.initial_goal_angle = math.atan2(
             self.goal_y - self.current_y,
@@ -1089,16 +1091,21 @@ class DWANavController(Node):
                             if pure_motion and front_clear_for_pure:
                                 # 无障碍：使用纯运动模式
                                 target_yaw = math.atan2(dy, dx)
-                                heading_error = abs(self.normalize_angle(target_yaw - self.current_yaw))
+                                heading_error_raw = self.normalize_angle(target_yaw - self.current_yaw)
+                                heading_error = abs(heading_error_raw)
                                 angle_threshold = self.get_parameter('pure_motion_angle_threshold').value
                                 
                                 if heading_error > angle_threshold:
                                     # 航向偏差大 → 纯旋转
                                     cmd_vel.linear.x = 0.0
-                                    cmd_vel.angular.z = 0.5 if self.normalize_angle(target_yaw - self.current_yaw) > 0 else -0.5
+                                    # 使用方向锁定，避免左右摆动
+                                    if self.last_turn_dir == 0:
+                                        self.last_turn_dir = 1 if heading_error_raw > 0 else -1
+                                    cmd_vel.angular.z = self.last_turn_dir * 0.5
                                     motion_mode = f"纯旋转(偏差{math.degrees(heading_error):.0f}°)"
                                 else:
-                                    # 航向偏差小 → 纯直行
+                                    # 航向偏差小 → 纯直行，重置方向锁
+                                    self.last_turn_dir = 0
                                     cmd_vel.linear.x = best_v if best_v > 0.05 else 0.2
                                     cmd_vel.angular.z = 0.0
                                     motion_mode = "纯直行"
@@ -1114,15 +1121,21 @@ class DWANavController(Node):
                                 if best_v < min_v_threshold and abs(best_w) < min_w_threshold:
                                     # 两者都很小 → 根据前方障碍决定
                                     if front_clear:
-                                        # 前方畅通 → 直行
+                                        # 前方畅通 → 直行，重置方向锁
+                                        self.last_turn_dir = 0
                                         cmd_vel.linear.x = 0.15
                                         cmd_vel.angular.z = 0.0
                                         motion_mode = "DWA-前方畅通直行"
                                     else:
-                                        # 前方有障碍 → 旋转（用DWA建议的方向，但加大幅度）
+                                        # 前方有障碍 → 旋转，使用方向锁定避免摆动
                                         cmd_vel.linear.x = 0.0
-                                        turn_dir = 1.0 if best_w >= 0 else -1.0
-                                        cmd_vel.angular.z = turn_dir * 0.4
+                                        if self.last_turn_dir == 0:
+                                            # 首次选择方向，用DWA建议或bypass_direction
+                                            if self.bypass_direction != 0:
+                                                self.last_turn_dir = self.bypass_direction
+                                            else:
+                                                self.last_turn_dir = 1 if best_w >= 0 else -1
+                                        cmd_vel.angular.z = self.last_turn_dir * 0.4
                                         motion_mode = "DWA-避障旋转"
                                 elif best_v < min_v_threshold and abs(best_w) >= min_w_threshold:
                                     # 线速度小、角速度大 → 纯旋转（避障转向）

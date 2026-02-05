@@ -939,10 +939,10 @@ class DWANavController(Node):
                             heading_error = self.normalize_angle(
                                 target_yaw - self.current_yaw)
                             
-                            # 简单比例控制
-                            cmd_vel.linear.x = min(0.3, 0.5 * distance)
+                            # 简单比例控制（与naive_controller一致）
+                            cmd_vel.linear.x = min(0.5, 0.5 * distance)
                             cmd_vel.angular.z = self.clamp(
-                                1.5 * heading_error, -0.5, 0.5)
+                                2.0 * heading_error, -0.5, 0.5)
                             
                             # 重置绕行状态
                             if self.bypass_direction != 0:

@@ -942,8 +942,9 @@ class DWANavController(Node):
                     else:
                         # 脱离Emergency状态，重置计数
                         self.emergency_count = 0
+                    
                     # 卡住恢复：只旋转，不前进（避免穿墙）
-                    elif self.stuck_count > self.stuck_threshold:
+                    if not self.check_emergency_stop() and self.stuck_count > self.stuck_threshold:
                         # 如果已有方向锁定，使用锁定方向；否则选择新方向
                         if self.bypass_direction != 0:
                             direction = self.bypass_direction
@@ -971,7 +972,7 @@ class DWANavController(Node):
                         # 重置卡住计数（但不换方向，保持锁定）
                         if self.stuck_count > self.stuck_threshold + 50:
                             self.stuck_count = 0
-                    elif self.use_dwa and self.scan_received:
+                    elif not self.check_emergency_stop() and self.use_dwa and self.scan_received:
                         # === 检查是否前方完全无障碍物 ===
                         # 如果前方2m内无障碍物，直接用简单比例控制
                         front_clear_distance = self.get_front_clear_distance()

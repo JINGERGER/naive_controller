@@ -882,7 +882,7 @@ class DWANavController(Node):
                         # 计算脱困旋转方向：远离最近障碍物
                         escape_direction = self.get_escape_direction()
                         if escape_direction != 0:
-                            cmd_vel.angular.z = escape_direction * 1.5  # 快速旋转脱困
+                            cmd_vel.angular.z = escape_direction * 0.8  # 温和旋转脱困
                             self.get_logger().warn(
                                 f'Emergency! Rotating to escape '
                                 f'({"LEFT" if escape_direction > 0 else "RIGHT"})',
@@ -917,7 +917,7 @@ class DWANavController(Node):
                         else:
                             cmd_vel.linear.x = 0.0  # 前方有障碍，只旋转
                         
-                        cmd_vel.angular.z = direction * 1.2  # 适度转向（减小以便前进）
+                        cmd_vel.angular.z = direction * 0.6  # 温和转向，避免太快
                         self.last_angular_z = cmd_vel.angular.z  # 更新平滑器
                         
                         self.get_logger().warn(

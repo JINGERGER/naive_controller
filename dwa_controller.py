@@ -1103,10 +1103,42 @@ class DWANavController(Node):
                                     cmd_vel.angular.z = 0.0
                                     motion_mode = "纯直行"
                             else:
-                                # 有障碍：使用DWA避障（允许组合运动）
-                                cmd_vel.linear.x = best_v
-                                cmd_vel.angular.z = best_w
-                                motion_mode = "DWA避障"
+                                # 有障碍：使用DWA避障
+                                # 避免小速度组合，检查前方障碍决定动作
+                                min_v_threshold = 0.1  # 线速度阈值
+                                min_w_threshold = 0.15  # 角速度阈值
+                                
+                                # 检查前方是否畅通
+                                front_clear = self.check_front_clear()
+                                
+                                if best_v < min_v_threshold and abs(best_w) < min_w_threshold:
+                                    # 两者都很小 → 根据前方障碍决定
+                                    if front_clear:
+                                        # 前方畅通 → 直行
+                                        cmd_vel.linear.x = 0.15
+                                        cmd_vel.angular.z = 0.0
+                                        motion_mode = "DWA-前方畅通直行"
+                                    else:
+                                        # 前方有障碍 → 旋转（用DWA建议的方向，但加大幅度）
+                                        cmd_vel.linear.x = 0.0
+                                        turn_dir = 1.0 if best_w >= 0 else -1.0
+                                        cmd_vel.angular.z = turn_dir * 0.4
+                                        motion_mode = "DWA-避障旋转"
+                                elif best_v < min_v_threshold and abs(best_w) >= min_w_threshold:
+                                    # 线速度小、角速度大 → 纯旋转（避障转向）
+                                    cmd_vel.linear.x = 0.0
+                                    cmd_vel.angular.z = best_w
+                                    motion_mode = "DWA-纯旋转"
+                                elif best_v >= min_v_threshold and abs(best_w) < min_w_threshold:
+                                    # 线速度大、角速度小 → 纯直行
+                                    cmd_vel.linear.x = best_v
+                                    cmd_vel.angular.z = 0.0
+                                    motion_mode = "DWA-纯直行"
+                                else:
+                                    # 两者都够大 → 允许组合
+                                    cmd_vel.linear.x = best_v
+                                    cmd_vel.angular.z = best_w
+                                    motion_mode = "DWA-组合"
 
                             # 发布规划轨迹
                             if trajectory is not None:

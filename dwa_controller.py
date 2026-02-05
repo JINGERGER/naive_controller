@@ -907,19 +907,20 @@ class DWANavController(Node):
                     # 紧急停止检测：如果障碍物太近，停止前进但允许旋转脱困
                     if self.check_emergency_stop():
                         cmd_vel.linear.x = 0.0
-                        # 计算脱困旋转方向：远离最近障碍物
-                        escape_direction = self.get_escape_direction()
-                        if escape_direction != 0:
-                            cmd_vel.angular.z = escape_direction * 0.8  # 温和旋转脱困
-                            self.get_logger().warn(
-                                f'Emergency! Rotating to escape '
-                                f'({"LEFT" if escape_direction > 0 else "RIGHT"})',
-                                throttle_duration_sec=0.5)
-                        else:
-                            cmd_vel.angular.z = 0.0
-                            self.get_logger().warn(
-                                'Emergency stop! No clear escape direction!',
-                                throttle_duration_sec=1.0)
+                        # 计算脱困旋转方向：使用方向锁定，避免左右摆动
+                        if self.last_turn_dir == 0:
+                            # 首次选择方向
+                            escape_direction = self.get_escape_direction()
+                            if escape_direction != 0:
+                                self.last_turn_dir = escape_direction
+                            else:
+                                self.last_turn_dir = 1  # 默认左转
+                        
+                        cmd_vel.angular.z = self.last_turn_dir * 0.8  # 使用锁定方向
+                        self.get_logger().warn(
+                            f'Emergency! Rotating to escape '
+                            f'({"LEFT" if self.last_turn_dir > 0 else "RIGHT"})',
+                            throttle_duration_sec=0.5)
                     # 卡住恢复：只旋转，不前进（避免穿墙）
                     elif self.stuck_count > self.stuck_threshold:
                         # 如果已有方向锁定，使用锁定方向；否则选择新方向

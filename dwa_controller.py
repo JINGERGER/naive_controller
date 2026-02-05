@@ -935,21 +935,14 @@ class DWANavController(Node):
                             self.get_logger().info(
                                 f'[Recovery] 锁定恢复方向: {"左" if direction > 0 else "右"}')
                         
-                        # 检查前方是否有障碍物
-                        front_clear = self.check_front_clear()
-                        
-                        if front_clear:
-                            cmd_vel.linear.x = 0.15  # 前方无障碍，积极前进
-                        else:
-                            cmd_vel.linear.x = 0.0  # 前方有障碍，只旋转
-                        
-                        cmd_vel.angular.z = direction * 0.6  # 温和转向，避免太快
+                        # 纯旋转脱困（避免打滑）
+                        cmd_vel.linear.x = 0.0
+                        cmd_vel.angular.z = direction * 0.6  # 温和转向
                         self.last_angular_z = cmd_vel.angular.z  # 更新平滑器
                         
                         self.get_logger().warn(
                             f'Stuck! Recovery: {"LEFT" if direction > 0 else "RIGHT"}, '
-                            f'front={"clear" if front_clear else "blocked"}, '
-                            f'lock={self.bypass_lock_count}',
+                            f'纯旋转脱困, lock={self.bypass_lock_count}',
                             throttle_duration_sec=1.0)
                         # 重置卡住计数（但不换方向，保持锁定）
                         if self.stuck_count > self.stuck_threshold + 50:
@@ -1128,28 +1121,35 @@ class DWANavController(Node):
                                     throttle_duration_sec=1.0
                                 )
                     else:
-                        # 简单控制（无避障）
-                        cmd_vel.linear.x = self.clamp(
-                            0.5 * distance,
-                            0.0,
-                            self.dwa_planner.max_linear_vel
-                        )
-
+                        # 简单控制（无避障）- 纯运动模式
                         target_yaw = math.atan2(dy, dx)
                         heading_error = self.normalize_angle(
                             target_yaw - self.current_yaw)
-                        cmd_vel.angular.z = self.clamp(
-                            2.0 * heading_error,
-                            -self.dwa_planner.max_angular_vel * 0.5,
-                            self.dwa_planner.max_angular_vel * 0.5
-                        )
                         
-                        # [DEBUG] 简单控制模式日志
-                        self.get_logger().info(
-                            f'[MOVING-Simple] dist={distance:.2f}m, '
-                            f'heading_err={math.degrees(heading_error):.1f}°, '
-                            f'cmd: v={cmd_vel.linear.x:.2f}, w={cmd_vel.angular.z:.2f}',
-                            throttle_duration_sec=0.5)
+                        angle_threshold = self.get_parameter('pure_motion_angle_threshold').value
+                        if abs(heading_error) > angle_threshold:
+                            # 角度偏差大，纯旋转
+                            cmd_vel.linear.x = 0.0
+                            cmd_vel.angular.z = self.clamp(
+                                2.0 * heading_error,
+                                -0.8, 0.8
+                            )
+                            self.get_logger().info(
+                                f'[Simple-旋转] 角度偏差={math.degrees(heading_error):.1f}°, '
+                                f'w={cmd_vel.angular.z:.2f}',
+                                throttle_duration_sec=0.5)
+                        else:
+                            # 角度偏差小，纯直行
+                            cmd_vel.linear.x = self.clamp(
+                                0.5 * distance,
+                                0.0,
+                                self.dwa_planner.max_linear_vel
+                            )
+                            cmd_vel.angular.z = 0.0
+                            self.get_logger().info(
+                                f'[Simple-直行] dist={distance:.2f}m, '
+                                f'v={cmd_vel.linear.x:.2f}',
+                                throttle_duration_sec=0.5)
                 else:
                     # 移动完成
                     self.state = ControllerState.REACHED

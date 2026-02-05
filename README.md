@@ -1,159 +1,285 @@
 # ROS2 导航控制器测试环境
 
-这是一个将目标点导航分解为"旋转+直走"两个动作的简单控制器，使用ODOM增量进行闭环控制。
+本项目包含两个导航控制器：
+1. **Naive Controller** - 简单的"旋转+直走"控制器，无避障
+2. **DWA Controller** - 带避障功能的动态窗口法(DWA)控制器
 
 ## 文件说明
 
-- `naive_controller.py` - 主控制器节点
-- `fake_odom.py` - 模拟里程计节点（用于测试）
-- `test_goal_publisher.py` - 测试目标点发布器
-- `visualizer.py` - 2D可视化工具
+| 文件 | 说明 |
+|------|------|
+| `naive_controller.py` | 简单控制器（旋转+直走） |
+| `dwa_controller.py` | DWA避障控制器 |
+| `fake_odom.py` | 模拟里程计节点 |
+| `fake_scan.py` | 模拟激光扫描节点 |
+| `visualizer.py` | 2D可视化工具 |
+| `interactive_goal.py` | 交互式目标点发布器 |
+| `interactive_obstacle.py` | 交互式障碍物发布器 |
+| `test_goal_publisher.py` | 命令行目标点发布器 |
 
-## 测试步骤
+---
 
-### 1. 启动模拟里程计
+## 方案一：简单控制器（无避障）
+
+### 启动步骤
 
 ```bash
+# 终端1：模拟里程计
 python3 fake_odom.py
-```
 
-### 2. 启动控制器
-
-在新终端中：
-
-```bash
+# 终端2：简单控制器
 python3 naive_controller.py
+
+# 终端3：可视化
+python3 visualizer.py
+
+# 终端4：发送目标点
+python3 interactive_goal.py
 ```
 
-### 3. 启动可视化工具
+### 工作原理
 
-在新终端中：
+1. 接收目标点（base_link或odom坐标系）
+2. 转换到odom坐标系作为固定目标
+3. 旋转至目标方向
+4. 直线前进至目标点
+
+---
+
+## 方案二：DWA避障控制器
+
+### 启动步骤
 
 ```bash
+# 终端1：模拟里程计
+python3 fake_odom.py
+
+# 终端2：模拟激光扫描
+python3 fake_scan.py
+
+# 终端3：DWA控制器
+python3 dwa_controller.py
+
+# 终端4：可视化
 python3 visualizer.py
+
+# 终端5：发送目标点
+python3 interactive_goal.py
+
+# 终端6（可选）：添加障碍物
+python3 interactive_obstacle.py
 ```
 
-会弹出一个matplotlib窗口，实时显示：
-- 蓝色圆点：机器人当前位置
-- 蓝色箭头：机器人朝向
-- 蓝色线：运动轨迹
-- 红色星号：目标点（odom坐标系）
-- 绿色星号：目标点（base_link坐标系，会跟随机器人移动）
+### DWA参数
 
-### 4. 发送目标点
+通过ROS2参数设置：
 
-有两种方式：
+```bash
+python3 dwa_controller.py --ros-args \
+  -p max_linear_vel:=0.3 \
+  -p max_angular_vel:=2.5 \
+  -p predict_time:=2.0 \
+  -p goal_cost_weight:=1.0 \
+  -p obstacle_cost_weight:=1.0 \
+  -p robot_radius:=0.3 \
+  -p safe_distance:=0.15
+```
 
-#### 方式1：交互式手动输入（推荐）
+### OctoMap 支持
 
-在新终端中运行：
+DWA控制器支持从OctoMap获取障碍物信息：
+
+```bash
+python3 dwa_controller.py --ros-args \
+  -p use_octomap:=true \
+  -p octomap_topic:=/octomap_point_cloud_centers \
+  -p octomap_height_min:=0.0 \
+  -p octomap_height_max:=0.5 \
+  -p octomap_resolution:=0.1 \
+  -p octomap_range:=5.0
+```
+
+**支持的OctoMap话题：**
+
+| 话题 | 类型 | 说明 |
+|------|------|------|
+| `/octomap_point_cloud_centers` | PointCloud2 | 占用体素中心点（推荐） |
+| `/occupied_cells_vis_array` | MarkerArray | 可视化Markers（备选） |
+
+**OctoMap工作流程：**
+```
+传感器点云 → [octomap_server] → OctoMap话题 → [DWA控制器]
+```
+
+需要安装octomap_server：
+```bash
+sudo apt install ros-humble-octomap-server
+
+ros2 run octomap_server octomap_server_node --ros-args \
+  -p frame_id:=odom \
+  -r cloud_in:=/your_pointcloud_topic
+```
+
+---
+
+## 可视化说明
+
+可视化窗口显示：
+
+| 元素 | 说明 |
+|------|------|
+| 彩色圆点 | 机器人位置（颜色随状态变化） |
+| 箭头 | 机器人朝向 |
+| 蓝色线 | 运动轨迹 |
+| 红色星号 | 目标点 |
+| 红色圆圈 | 障碍物 |
+| 绿色线 | DWA规划路径 |
+
+**机器人颜色状态：**
+- 灰色：IDLE（空闲）
+- 橙色：ROTATING（旋转中）
+- 蓝色：MOVING（移动中）
+- 绿色：REACHED（已到达）
+
+---
+
+## 交互式目标点
 
 ```bash
 python3 interactive_goal.py
 ```
 
-然后根据提示手动输入目标点坐标：
+支持两种坐标系输入：
+- **相对坐标（base_link）**：默认，相对于机器人当前位置
+- **绝对坐标（odom）**：输入 `abs` 切换
 
 ```
-请输入目标点 (x y): 2.0 0.0    # 前方2米
-请输入目标点 (x y): 0.0 1.0    # 左侧1米
-请输入目标点 (x y): -1.0 0.0   # 后方1米
-请输入目标点 (x y): 1.0 -1.0   # 右前方
-请输入目标点 (x y): q          # 退出
+=== 交互式目标点发布器 ===
+当前坐标系: base_link (相对坐标)
+输入 'abs' 切换到绝对坐标, 'rel' 切换到相对坐标
+输入 'q' 退出
+
+请输入目标点 (x y): 2.0 0.0     # 前方2米
+请输入目标点 (x y): abs          # 切换到绝对坐标
+请输入目标点 (x y): 5.0 3.0     # 去往odom坐标(5,3)
 ```
 
-#### 方式2：命令行参数
+---
+
+## 交互式障碍物
 
 ```bash
-# 前方2米
-python3 test_goal_publisher.py 2.0 0.0
-
-# 左侧1米
-python3 test_goal_publisher.py 0.0 1.0
-
-# 后方1米（会先转180度，再前进）
-python3 test_goal_publisher.py -1.0 0.0
-
-# 右前方（45度，距离√2米）
-python3 test_goal_publisher.py 1.0 -1.0
+python3 interactive_obstacle.py
 ```
 
-## 观察点
+支持多种障碍物添加方式：
 
-1. **旋转阶段**
-   - 机器人会先旋转到目标方向
-   - 控制器会打印旋转进度
-   - 可视化中可以看到箭头旋转
+```
+命令:
+  x y        - 添加单个障碍物
+  wall x1 y1 x2 y2 [n]  - 添加墙壁
+  circle x y r [n]      - 添加圆形障碍
+  preset N   - 预设场景 (1-3)
+  clear      - 清除所有障碍物
+  q          - 退出
 
-2. **移动阶段**
-   - 旋转完成后开始直线前进
-   - 控制器会打印移动进度
-   - 可视化中可以看到轨迹应该是直线
+> 2.0 0.0              # 在(2,0)添加障碍物
+> wall 1 -1 1 1 10     # 从(1,-1)到(1,1)的墙壁
+> circle 3 3 1 20      # 圆心(3,3)半径1的圆形障碍
+> preset 1             # 加载预设场景1
+> clear                # 清除所有
+```
 
-3. **到达目标**
-   - 控制器打印 "goal reached!"
-   - 机器人停止
-   - 可以发送下一个目标点
+---
+
+## 话题列表
+
+| 话题 | 类型 | 方向 | 说明 |
+|------|------|------|------|
+| `/odom` | Odometry | 输入 | 机器人里程计 |
+| `/scan` | LaserScan | 输入 | 激光扫描（DWA） |
+| `/goal_pose` | PoseStamped | 输入 | 目标点 |
+| `/cmd_vel` | Twist | 输出 | 速度指令 |
+| `/controller_state` | String | 输出 | 控制器状态 |
+| `/add_obstacle` | PoseStamped | 输入 | 添加障碍物 |
+| `/clear_obstacles` | String | 输入 | 清除障碍物 |
+| `/dwa_trajectory` | Path | 输出 | DWA规划路径 |
+
+---
 
 ## 可调参数
 
-在 `naive_controller.py` 中可以调整：
+### Naive Controller
 
 ```python
-self.declare_parameter('angle_threshold', 0.1)          # 角度阈值（弧度）
-self.declare_parameter('distance_threshold', 0.05)      # 距离阈值（米）
-self.declare_parameter('max_linear_velocity', 0.3)      # 最大线速度（m/s）
-self.declare_parameter('max_angular_velocity', 1.0)     # 最大角速度（rad/s）
-self.declare_parameter('kp_linear', 0.5)                # 线速度增益
-self.declare_parameter('kp_angular', 2.0)               # 角速度增益
+angle_threshold = 0.1          # 角度阈值（弧度）
+distance_threshold = 0.05      # 距离阈值（米）
+max_linear_velocity = 0.3      # 最大线速度（m/s）
+max_angular_velocity = 1.0     # 最大角速度（rad/s）
+kp_linear = 0.5                # 线速度增益
+kp_angular = 2.0               # 角速度增益
 ```
 
-通过ROS2参数也可以设置：
+### DWA Controller
 
-```bash
-python3 naive_controller.py --ros-args -p max_linear_velocity:=0.5
+```python
+max_linear_vel = 0.3           # 最大线速度
+min_linear_vel = 0.0           # 最小线速度
+max_angular_vel = 2.5          # 最大角速度
+max_linear_acc = 0.2           # 最大线加速度
+max_angular_acc = 5.0          # 最大角加速度
+predict_time = 2.0             # 轨迹预测时间
+linear_samples = 10            # 线速度采样数
+angular_samples = 50           # 角速度采样数
+goal_cost_weight = 1.0         # 目标代价权重
+obstacle_cost_weight = 1.0     # 障碍代价权重
+velocity_cost_weight = 0.1     # 速度代价权重
+robot_radius = 0.3             # 机器人半径
+safe_distance = 0.15           # 安全距离
+obstacle_radius = 0.15         # 障碍物半径
 ```
 
-## 测试用例建议
-
-1. **简单前进**: `python3 test_goal_publisher.py 1.0 0.0`
-2. **旋转90度后前进**: `python3 test_goal_publisher.py 0.0 1.0`
-3. **旋转180度后前进**: `python3 test_goal_publisher.py -1.0 0.0`
-4. **斜向移动**: `python3 test_goal_publisher.py 1.0 1.0`
-5. **短距离精度测试**: `python3 test_goal_publisher.py 0.1 0.1`
-
-## 工作原理
-
-### 目标点处理
-- 输入：base_link坐标系下的目标点 (target_x, target_y)
-- 计算：
-  - 目标旋转角度：`target_yaw = atan2(target_y, target_x)`
-  - 目标前进距离：`target_distance = sqrt(target_x² + target_y²)`
-
-### 旋转控制
-- 记录起始yaw：`start_yaw`
-- 使用ODOM监控：`rotated_angle = current_yaw - start_yaw`
-- 比例控制：`angular_vel = Kp * (target_yaw - rotated_angle)`
-
-### 移动控制
-- 记录起始位置：`(start_x, start_y)`
-- 使用ODOM监控：`moved_distance = sqrt((x-start_x)² + (y-start_y)²)`
-- 比例控制：`linear_vel = Kp * (target_distance - moved_distance)`
-- 微调朝向保持直线
+---
 
 ## 故障排除
 
 ### 可视化窗口无响应
-- 确保安装了matplotlib：`pip3 install matplotlib`
-- 可能需要安装tkinter：`sudo apt install python3-tk`
+```bash
+pip3 install matplotlib
+sudo apt install python3-tk
+```
 
 ### 机器人不动
-- 检查是否所有节点都在运行
-- 检查话题连接：`ros2 topic list`
-- 检查消息流：`ros2 topic echo /cmd_vel`
+```bash
+# 检查话题
+ros2 topic list
+ros2 topic echo /cmd_vel
 
-### 机器人运动不准确
-- 调整控制参数（kp_linear, kp_angular）
-- 调整阈值（angle_threshold, distance_threshold）
-- 降低最大速度
-# naive_controller
+# 检查里程计
+ros2 topic echo /odom
+```
+
+### DWA机器人卡住
+- 增大 `max_angular_vel` 允许更大转弯
+- 减小 `obstacle_cost_weight` 减少避障保守程度
+- 增大 `predict_time` 让规划更远
+
+### DWA机器人撞墙
+- 增大 `safe_distance` 增加安全距离
+- 增大 `obstacle_cost_weight` 增加避障权重
+- 减小 `max_linear_vel` 降低速度
+
+---
+
+## 依赖
+
+```bash
+# ROS2 (Humble)
+sudo apt install ros-humble-desktop
+
+# Python依赖
+pip3 install matplotlib numpy
+
+# OctoMap（可选）
+sudo apt install ros-humble-octomap-server
+```

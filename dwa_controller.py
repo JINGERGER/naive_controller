@@ -1086,7 +1086,8 @@ class DWANavController(Node):
                             motion_mode = "DWA"
                             
                             # 检查前方是否有障碍物（决定是否使用纯运动模式）
-                            front_clear_for_pure = self.min_obstacle_dist > 1.0  # 前方1米内无障碍
+                            # 注意：如果正在绕行（bypass_direction != 0），不要切换到直行模式
+                            front_clear_for_pure = self.min_obstacle_dist > 1.0 and self.bypass_direction == 0
                             
                             if pure_motion and front_clear_for_pure:
                                 # 无障碍：使用纯运动模式

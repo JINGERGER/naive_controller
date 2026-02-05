@@ -256,7 +256,7 @@ class DWANavController(Node):
         # 声明参数
         self.declare_parameter('angle_threshold', 0.1)
         self.declare_parameter('distance_threshold', 0.05)
-        self.declare_parameter('max_linear_velocity', 0.3)
+        self.declare_parameter('max_linear_velocity', 0.5)  # Bunker Mini 最大1m/s，设置0.5m/s
         self.declare_parameter('max_angular_velocity', 1.0)
         self.declare_parameter('max_linear_acc', 0.2)
         self.declare_parameter('max_angular_acc', 1.0)

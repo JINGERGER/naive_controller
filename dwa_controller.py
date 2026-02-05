@@ -1079,22 +1079,24 @@ class DWANavController(Node):
                                         f'[绕行] 强制最小前进速度 {min_bypass_vel}',
                                         throttle_duration_sec=1.0)
                             
-                            # === 纯运动模式：避免小速度下打滑 ===
+                            # === 纯运动模式：基于航向偏差判断 ===
                             pure_motion = self.get_parameter('pure_motion_mode').value
                             motion_mode = "组合"
                             
                             if pure_motion:
-                                # 更严格的纯运动：有转向就不前进
-                                angular_threshold = 0.1  # 角速度阈值（降低）
+                                # 计算到目标的航向偏差
+                                target_yaw = math.atan2(dy, dx)
+                                heading_error = abs(self.normalize_angle(target_yaw - self.current_yaw))
+                                angle_threshold = self.get_parameter('pure_motion_angle_threshold').value
                                 
-                                if abs(best_w) > angular_threshold:
-                                    # 需要转向 → 纯旋转（不前进）
+                                if heading_error > angle_threshold:
+                                    # 航向偏差大 → 纯旋转（先对准目标）
                                     cmd_vel.linear.x = 0.0
-                                    cmd_vel.angular.z = best_w
-                                    motion_mode = "纯旋转"
+                                    cmd_vel.angular.z = best_w if abs(best_w) > 0.1 else (0.5 if best_w >= 0 else -0.5)
+                                    motion_mode = f"纯旋转(偏差{math.degrees(heading_error):.0f}°)"
                                 else:
-                                    # 不需要转向 → 纯直行
-                                    cmd_vel.linear.x = best_v
+                                    # 航向偏差小 → 纯直行（保持方向前进）
+                                    cmd_vel.linear.x = best_v if best_v > 0.05 else 0.15
                                     cmd_vel.angular.z = 0.0
                                     motion_mode = "纯直行"
                             else:

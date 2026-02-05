@@ -261,6 +261,8 @@ class DWANavController(Node):
         # 最小速度阈值（克服电机死区）
         self.declare_parameter('min_linear_velocity', 0.05)  # 低于此值的线速度会被置0或提升
         self.declare_parameter('min_angular_velocity', 0.15)  # 低于此值的角速度会被置0或提升
+        # 纯运动模式（避免小速度下打滑）
+        self.declare_parameter('pure_motion_mode', True)  # 是否启用纯旋转/纯直行模式
         self.declare_parameter('max_linear_acc', 0.2)
         self.declare_parameter('max_angular_acc', 1.0)
         self.declare_parameter('control_frequency', 10.0)
@@ -957,25 +959,35 @@ class DWANavController(Node):
                         front_clear_distance = self.get_front_clear_distance()
                         # 只检查前方是否畅通，不管侧面有多少障碍物
                         if front_clear_distance > 2.0:
-                            # 前方畅通，使用简单比例控制（更高效）
+                            # 前方畅通，使用纯旋转+纯直行模式（避免打滑）
                             target_yaw = math.atan2(dy, dx)
                             heading_error = self.normalize_angle(
                                 target_yaw - self.current_yaw)
                             
-                            # 简单比例控制（与naive_controller一致）
-                            cmd_vel.linear.x = min(0.5, 0.5 * distance)
-                            cmd_vel.angular.z = self.clamp(
-                                2.0 * heading_error, -0.5, 0.5)
+                            # 纯运动模式：先旋转对准，再直行
+                            angle_threshold = 0.15  # 约8.6度
+                            if abs(heading_error) > angle_threshold:
+                                # 角度偏差大，纯旋转（不前进）
+                                cmd_vel.linear.x = 0.0
+                                cmd_vel.angular.z = self.clamp(
+                                    2.0 * heading_error, -0.8, 0.8)
+                                self.get_logger().info(
+                                    f'[直行模式-旋转] 角度偏差={math.degrees(heading_error):.1f}°, '
+                                    f'w={cmd_vel.angular.z:.2f}',
+                                    throttle_duration_sec=0.5)
+                            else:
+                                # 角度偏差小，纯直行（不转向）
+                                cmd_vel.linear.x = min(0.5, 0.5 * distance)
+                                cmd_vel.angular.z = 0.0
+                                self.get_logger().info(
+                                    f'[直行模式-直行] 前方畅通({front_clear_distance:.1f}m), '
+                                    f'v={cmd_vel.linear.x:.2f}, dist={distance:.2f}',
+                                    throttle_duration_sec=0.5)
                             
                             # 重置绕行状态
                             if self.bypass_direction != 0:
                                 self.bypass_direction = 0
                                 self.bypass_lock_count = 0
-                            
-                            self.get_logger().info(
-                                f'[直行模式] 前方畅通({front_clear_distance:.1f}m), '
-                                f'v={cmd_vel.linear.x:.2f}, dist={distance:.2f}',
-                                throttle_duration_sec=1.0)
                         else:
                             # 使用DWA规划
                             result = self.dwa_planner.plan(
@@ -1073,8 +1085,31 @@ class DWANavController(Node):
                                         f'[绕行] 强制最小前进速度 {min_bypass_vel}',
                                         throttle_duration_sec=1.0)
                             
-                            cmd_vel.linear.x = best_v
-                            cmd_vel.angular.z = best_w
+                            # === 纯运动模式：避免小速度下打滑 ===
+                            pure_motion = self.get_parameter('pure_motion_mode').value
+                            motion_mode = "组合"
+                            
+                            if pure_motion:
+                                angular_threshold = 0.2  # 角速度阈值
+                                linear_threshold = 0.08  # 线速度阈值
+                                
+                                if abs(best_w) > angular_threshold and best_v < linear_threshold:
+                                    # 角速度大、线速度小 → 纯旋转
+                                    cmd_vel.linear.x = 0.0
+                                    cmd_vel.angular.z = best_w
+                                    motion_mode = "纯旋转"
+                                elif best_v > linear_threshold and abs(best_w) < angular_threshold:
+                                    # 线速度大、角速度小 → 纯直行
+                                    cmd_vel.linear.x = best_v
+                                    cmd_vel.angular.z = 0.0
+                                    motion_mode = "纯直行"
+                                else:
+                                    # 两者都较大（急转弯）→ 允许组合
+                                    cmd_vel.linear.x = best_v
+                                    cmd_vel.angular.z = best_w
+                            else:
+                                cmd_vel.linear.x = best_v
+                                cmd_vel.angular.z = best_w
 
                             # 发布规划轨迹
                             if trajectory is not None:
@@ -1085,7 +1120,7 @@ class DWANavController(Node):
                                 if self.bypass_direction != 0:
                                     bypass_str = f', 锁定:{"左" if self.bypass_direction > 0 else "右"}'
                                 self.get_logger().info(
-                                    f'DWA: v={best_v:.2f}, w={best_w:.2f}, '
+                                    f'DWA: v={best_v:.2f}, w={best_w:.2f} [{motion_mode}], '
                                     f'dist={distance:.2f}, '
                                     f'obs={len(self.obstacles)}, '
                                     f'valid={valid_count}{bypass_str}',

@@ -266,6 +266,7 @@ class DWANavController(Node):
         self.declare_parameter('robot_radius', 0.45)
         self.declare_parameter('safe_distance', 0.2)
         self.declare_parameter('use_dwa', True)  # 是否启用DWA避障
+        self.declare_parameter('scan_fov', 2.094)  # scan视野角度(弧度), 默认±60°=120°总视野
         self.declare_parameter('use_octomap', False)  # 是否使用OctoMap障碍物
         self.declare_parameter('octomap_topic', '/octomap_point_cloud_centers')  # OctoMap点云话题
         self.declare_parameter('octomap_height_min', -0.1)  # 提取障碍物的最小高度
@@ -430,6 +431,9 @@ class DWANavController(Node):
         self.get_logger().info('DWA NavController initialized')
         self.get_logger().info(
             f'DWA Avoidance: {"ENABLED" if self.use_dwa else "DISABLED"}')
+        scan_fov_deg = math.degrees(self.get_parameter('scan_fov').value)
+        self.get_logger().info(
+            f'Scan FOV: ±{scan_fov_deg/2:.0f}° ({scan_fov_deg:.0f}° total)')
         self.get_logger().info(
             f'OctoMap Mode: {"ENABLED" if self.use_octomap else "DISABLED"}')
 
@@ -511,14 +515,32 @@ class DWANavController(Node):
 
         obstacles = []
         angle = msg.angle_min
+        
+        # === 只考虑前方扇形区域 ===
+        # scan_fov: 前方 ±120° = 240° 总视野（可通过参数调整）
+        scan_fov = self.get_parameter('scan_fov').value
+        half_fov = scan_fov / 2
 
         for i, r in enumerate(msg.ranges):
             # 跳过无效数据
             if r < msg.range_min or r > msg.range_max:
                 angle += msg.angle_increment
                 continue
+            
+            # === 角度过滤：只考虑前方区域 ===
+            # angle 在 base_link 坐标系中，0 = 正前方
+            normalized_angle = angle
+            while normalized_angle > math.pi:
+                normalized_angle -= 2 * math.pi
+            while normalized_angle < -math.pi:
+                normalized_angle += 2 * math.pi
+            
+            # 只保留前方扇形范围内的点
+            if abs(normalized_angle) > half_fov:
+                angle += msg.angle_increment
+                continue
 
-            # 限制检测范围（只考虑前方和侧方）
+            # 限制检测距离
             if r > 3.0:  # 只考虑3米内的障碍物
                 angle += msg.angle_increment
                 continue

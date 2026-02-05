@@ -263,6 +263,7 @@ class DWANavController(Node):
         self.declare_parameter('min_angular_velocity', 0.15)  # 低于此值的角速度会被置0或提升
         # 纯运动模式（避免小速度下打滑）
         self.declare_parameter('pure_motion_mode', True)  # 是否启用纯旋转/纯直行模式
+        self.declare_parameter('pure_motion_angle_threshold', 0.15)  # 纯运动模式角度阈值(弧度), 约8.6°
         self.declare_parameter('max_linear_acc', 0.2)
         self.declare_parameter('max_angular_acc', 1.0)
         self.declare_parameter('control_frequency', 10.0)
@@ -965,7 +966,7 @@ class DWANavController(Node):
                                 target_yaw - self.current_yaw)
                             
                             # 纯运动模式：先旋转对准，再直行
-                            angle_threshold = 0.15  # 约8.6度
+                            angle_threshold = self.get_parameter('pure_motion_angle_threshold').value
                             if abs(heading_error) > angle_threshold:
                                 # 角度偏差大，纯旋转（不前进）
                                 cmd_vel.linear.x = 0.0

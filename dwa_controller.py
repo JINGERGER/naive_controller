@@ -258,6 +258,9 @@ class DWANavController(Node):
         self.declare_parameter('distance_threshold', 0.05)
         self.declare_parameter('max_linear_velocity', 0.5)  # Bunker Mini 最大1m/s，设置0.5m/s
         self.declare_parameter('max_angular_velocity', 1.0)
+        # 最小速度阈值（克服电机死区）
+        self.declare_parameter('min_linear_velocity', 0.05)  # 低于此值的线速度会被置0或提升
+        self.declare_parameter('min_angular_velocity', 0.15)  # 低于此值的角速度会被置0或提升
         self.declare_parameter('max_linear_acc', 0.2)
         self.declare_parameter('max_angular_acc', 1.0)
         self.declare_parameter('control_frequency', 10.0)
@@ -455,6 +458,26 @@ class DWANavController(Node):
     def clamp(self, value, min_value, max_value):
         """限制数值范围"""
         return max(min_value, min(value, max_value))
+    
+    def apply_min_velocity(self, cmd_vel):
+        """
+        应用最小速度阈值，克服电机死区
+        如果速度太小但不为0，提升到最小值
+        """
+        min_linear = self.get_parameter('min_linear_velocity').value
+        min_angular = self.get_parameter('min_angular_velocity').value
+        
+        # 处理线速度
+        if abs(cmd_vel.linear.x) > 0.001 and abs(cmd_vel.linear.x) < min_linear:
+            # 线速度太小，提升到最小值
+            cmd_vel.linear.x = min_linear if cmd_vel.linear.x > 0 else -min_linear
+        
+        # 处理角速度
+        if abs(cmd_vel.angular.z) > 0.001 and abs(cmd_vel.angular.z) < min_angular:
+            # 角速度太小，提升到最小值
+            cmd_vel.angular.z = min_angular if cmd_vel.angular.z > 0 else -min_angular
+        
+        return cmd_vel
 
     def odom_callback(self, msg):
         """ODOM回调函数，更新当前位姿和速度"""
@@ -1124,6 +1147,9 @@ class DWANavController(Node):
                 f'angular.z={cmd_vel.angular.z:.3f}',
                 throttle_duration_sec=0.3)
 
+        # 应用最小速度阈值（克服电机死区）
+        cmd_vel = self.apply_min_velocity(cmd_vel)
+        
         # 发布速度命令
         self.cmd_vel_pub.publish(cmd_vel)
 

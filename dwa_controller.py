@@ -261,8 +261,10 @@ class DWANavController(Node):
         self.declare_parameter('max_linear_acc', 0.2)
         self.declare_parameter('max_angular_acc', 1.0)
         self.declare_parameter('control_frequency', 10.0)
-        self.declare_parameter('robot_radius', 0.3)
-        self.declare_parameter('safe_distance', 0.5)
+        # Bunker Mini 尺寸: 690 x 570 x 335 mm
+        # robot_radius = sqrt((0.345)² + (0.285)²) ≈ 0.45m (外接圆半径)
+        self.declare_parameter('robot_radius', 0.45)
+        self.declare_parameter('safe_distance', 0.2)
         self.declare_parameter('use_dwa', True)  # 是否启用DWA避障
         self.declare_parameter('use_octomap', False)  # 是否使用OctoMap障碍物
         self.declare_parameter('octomap_topic', '/octomap_point_cloud_centers')  # OctoMap点云话题
@@ -304,7 +306,7 @@ class DWANavController(Node):
             'obstacle_cost_weight': 1.0,  # 降低障碍物权重
             'velocity_cost_weight': 0.1,  # 速度权重
             'robot_radius': self.get_parameter('robot_radius').value,
-            'safe_distance': 0.15,  # 更小的安全距离，允许更近通过
+            'safe_distance': self.get_parameter('safe_distance').value,
         }
         
         self.dwa_planner = DWAPlanner(dwa_config)

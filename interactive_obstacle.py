@@ -2,13 +2,15 @@
 """
 交互式障碍物添加器
 用于向fake_scan添加虚拟障碍物
+支持 odom（绝对坐标）和 base_link（相对坐标）两种模式
 """
 
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
 from std_msgs.msg import String
-import json
+import math
 
 
 class InteractiveObstaclePublisher(Node):
@@ -25,26 +27,88 @@ class InteractiveObstaclePublisher(Node):
         self.clear_pub = self.create_publisher(
             String, '/clear_obstacles', 10)
         
+        # 订阅里程计（用于 base_link 坐标转换）
+        self.odom_sub = self.create_subscription(
+            Odometry, '/odom', self.odom_callback, 10)
+        
+        # 机器人当前位姿
+        self.robot_x = 0.0
+        self.robot_y = 0.0
+        self.robot_yaw = 0.0
+        self.odom_received = False
+        
+        # 坐标系模式: 'odom' 或 'base_link'
+        self.frame_mode = 'base_link'
+        
         # 本地障碍物列表（用于显示）
         self.obstacles = []
         
         self.get_logger().info(
             'Interactive Obstacle Publisher initialized')
 
-    def publish_obstacle(self, x, y):
-        """发布障碍物"""
+    def odom_callback(self, msg):
+        """更新机器人位姿"""
+        self.robot_x = msg.pose.pose.position.x
+        self.robot_y = msg.pose.pose.position.y
+        
+        # 四元数转 yaw
+        q = msg.pose.pose.orientation
+        self.robot_yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self.odom_received = True
+
+    def transform_to_odom(self, local_x, local_y):
+        """将 base_link 坐标转换为 odom 坐标"""
+        cos_yaw = math.cos(self.robot_yaw)
+        sin_yaw = math.sin(self.robot_yaw)
+        
+        world_x = self.robot_x + local_x * cos_yaw - local_y * sin_yaw
+        world_y = self.robot_y + local_x * sin_yaw + local_y * cos_yaw
+        
+        return world_x, world_y
+
+    def publish_obstacle(self, x, y, use_base_link=None):
+        """发布障碍物
+        
+        Args:
+            x, y: 障碍物坐标
+            use_base_link: 是否使用 base_link 坐标系，None 表示使用当前模式
+        """
+        if use_base_link is None:
+            use_base_link = (self.frame_mode == 'base_link')
+        
+        # 如果是 base_link 坐标，转换到 odom
+        if use_base_link:
+            if not self.odom_received:
+                self.get_logger().warn('未收到 odom 数据，无法转换坐标')
+                return False
+            odom_x, odom_y = self.transform_to_odom(x, y)
+            local_x, local_y = x, y
+        else:
+            odom_x, odom_y = x, y
+            local_x, local_y = None, None
+        
         msg = PoseStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'odom'
-        msg.pose.position.x = x
-        msg.pose.position.y = y
+        msg.pose.position.x = odom_x
+        msg.pose.position.y = odom_y
         msg.pose.position.z = 0.0
         msg.pose.orientation.w = 1.0
 
         self.obstacle_pub.publish(msg)
-        self.obstacles.append((x, y))
-        self.get_logger().info(
-            f'Published obstacle at ({x:.3f}, {y:.3f})')
+        self.obstacles.append((odom_x, odom_y))
+        
+        if use_base_link:
+            self.get_logger().info(
+                f'Published obstacle: base_link({local_x:.3f}, {local_y:.3f}) '
+                f'-> odom({odom_x:.3f}, {odom_y:.3f})')
+        else:
+            self.get_logger().info(
+                f'Published obstacle at odom({odom_x:.3f}, {odom_y:.3f})')
+        
+        return True
 
     def clear_obstacles(self):
         """清除所有障碍物"""
@@ -59,7 +123,7 @@ class InteractiveObstaclePublisher(Node):
         return self.obstacles
 
 
-def print_help():
+def print_help(frame_mode='base_link'):
     """打印帮助信息"""
     print("\n命令说明:")
     print("  x y          - 添加障碍物，如: 2.0 1.0")
@@ -69,6 +133,12 @@ def print_help():
     print("  wall x y1 y2 - 添加垂直墙，如: wall 2.0 -1.0 1.0")
     print("  hwall x1 x2 y - 添加水平墙，如: hwall 1.0 3.0 1.5")
     print("  circle x y r - 添加圆形障碍物，如: circle 2.0 0.0 0.5")
+    print()
+    print("坐标系切换:")
+    print("  abs          - 切换到绝对坐标 (odom)")
+    print("  rel          - 切换到相对坐标 (base_link)")
+    print(f"  当前模式: {frame_mode}")
+    print()
     print("  help         - 显示此帮助")
     print("  q/quit       - 退出")
     print()
@@ -82,14 +152,23 @@ def main(args=None):
     print("\n" + "="*60)
     print("交互式障碍物添加器")
     print("="*60)
-    print("在odom坐标系中添加虚拟障碍物")
-    print("这些障碍物会被fake_scan节点检测并生成激光雷达数据")
-    print_help()
+    print("支持 odom（绝对坐标）和 base_link（相对坐标）两种模式")
+    print("输入 'abs' 切换到绝对坐标，'rel' 切换到相对坐标")
+    print_help(node.frame_mode)
+
+    def get_prompt():
+        if node.frame_mode == 'base_link':
+            return "障碍物[相对]> "
+        else:
+            return "障碍物[绝对]> "
 
     try:
         while rclpy.ok():
+            # 处理 ROS 回调
+            rclpy.spin_once(node, timeout_sec=0.01)
+            
             try:
-                user_input = input("障碍物> ").strip().lower()
+                user_input = input(get_prompt()).strip().lower()
 
                 # 检查退出命令
                 if user_input in ['q', 'quit', 'exit']:
@@ -100,9 +179,23 @@ def main(args=None):
                 if not user_input:
                     continue
 
+                # 切换到绝对坐标 (odom)
+                if user_input == 'abs':
+                    node.frame_mode = 'odom'
+                    print("已切换到绝对坐标 (odom)")
+                    continue
+
+                # 切换到相对坐标 (base_link)
+                if user_input == 'rel':
+                    node.frame_mode = 'base_link'
+                    print("已切换到相对坐标 (base_link)")
+                    if not node.odom_received:
+                        print("警告: 尚未收到 odom 数据，请确保 fake_odom 或机器人正在运行")
+                    continue
+
                 # 帮助
                 if user_input == 'help':
-                    print_help()
+                    print_help(node.frame_mode)
                     continue
 
                 # 列出障碍物
@@ -235,10 +328,12 @@ def main(args=None):
                 y = float(parts[1])
 
                 # 发布障碍物
-                node.publish_obstacle(x, y)
-                rclpy.spin_once(node, timeout_sec=0.1)
-
-                print(f"障碍物已添加: ({x:.3f}, {y:.3f})")
+                if node.publish_obstacle(x, y):
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                    if node.frame_mode == 'base_link':
+                        print(f"障碍物已添加: 相对({x:.3f}, {y:.3f})")
+                    else:
+                        print(f"障碍物已添加: 绝对({x:.3f}, {y:.3f})")
                 print("-" * 60)
 
             except ValueError:

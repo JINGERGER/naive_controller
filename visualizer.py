@@ -8,10 +8,11 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from matplotlib.collections import PatchCollection
+from matplotlib.collections import PatchCollection, LineCollection
 import math
 import numpy as np
 
@@ -47,6 +48,11 @@ class Visualizer(Node):
         # DWA规划轨迹
         self.dwa_trajectory_x = []
         self.dwa_trajectory_y = []
+
+        # LaserScan 数据
+        self.scan_points_x = []
+        self.scan_points_y = []
+        self.show_scan = True  # 是否显示 scan 数据
 
         # 订阅话题
         self.odom_sub = self.create_subscription(
@@ -93,6 +99,14 @@ class Visualizer(Node):
             10
         )
 
+        # 订阅LaserScan
+        self.scan_sub = self.create_subscription(
+            LaserScan,
+            '/scan',
+            self.scan_callback,
+            10
+        )
+
         # 设置matplotlib为交互模式
         plt.ion()
         self.fig, self.ax = plt.subplots(figsize=(10, 10))
@@ -118,6 +132,14 @@ class Visualizer(Node):
                                                   linewidth=2,
                                                   label='DWA Plan')
         self.robot_arrow = None
+
+        # LaserScan 绘图元素（淡灰色点）
+        self.scan_plot, = self.ax.plot([], [], '.', color='lightgray',
+                                        markersize=2, alpha=0.6,
+                                        label='LaserScan')
+        # LaserScan 射线（可选，默认关闭）
+        self.scan_lines = None
+        self.show_scan_rays = False  # 是否显示射线
 
         # 障碍物绘图元素
         self.obstacle_patches = []
@@ -185,6 +207,37 @@ class Visualizer(Node):
             self.dwa_trajectory_x.append(pose.pose.position.x)
             self.dwa_trajectory_y.append(pose.pose.position.y)
 
+    def scan_callback(self, msg):
+        """接收LaserScan数据，转换到odom坐标系"""
+        if not self.show_scan:
+            return
+
+        self.scan_points_x = []
+        self.scan_points_y = []
+
+        angle = msg.angle_min
+        cos_yaw = math.cos(self.robot_yaw)
+        sin_yaw = math.sin(self.robot_yaw)
+
+        for r in msg.ranges:
+            # 跳过无效数据
+            if r < msg.range_min or r > msg.range_max or math.isinf(r) or math.isnan(r):
+                angle += msg.angle_increment
+                continue
+
+            # base_link 坐标系下的点
+            local_x = r * math.cos(angle)
+            local_y = r * math.sin(angle)
+
+            # 转换到 odom 坐标系
+            world_x = self.robot_x + local_x * cos_yaw - local_y * sin_yaw
+            world_y = self.robot_y + local_x * sin_yaw + local_y * cos_yaw
+
+            self.scan_points_x.append(world_x)
+            self.scan_points_y.append(world_y)
+
+            angle += msg.angle_increment
+
     def goal_callback(self, msg):
         """接收目标点（base_link坐标系），转换到odom坐标系显示"""
         # 保存base_link系下的目标
@@ -247,6 +300,26 @@ class Visualizer(Node):
         else:
             self.dwa_trajectory_plot.set_data([], [])
 
+        # 更新LaserScan点云
+        if self.show_scan and len(self.scan_points_x) > 0:
+            self.scan_plot.set_data(self.scan_points_x, self.scan_points_y)
+        else:
+            self.scan_plot.set_data([], [])
+
+        # 移除旧的scan射线
+        if self.scan_lines is not None:
+            self.scan_lines.remove()
+            self.scan_lines = None
+
+        # 绘制scan射线（可选）
+        if self.show_scan_rays and len(self.scan_points_x) > 0:
+            lines = []
+            for px, py in zip(self.scan_points_x, self.scan_points_y):
+                lines.append([(self.robot_x, self.robot_y), (px, py)])
+            self.scan_lines = LineCollection(lines, colors='lightgray',
+                                              alpha=0.3, linewidths=0.5)
+            self.ax.add_collection(self.scan_lines)
+
         # 移除旧障碍物图形
         for patch in self.obstacle_patches:
             patch.remove()
@@ -285,8 +358,9 @@ class Visualizer(Node):
         }
         state_text = (f'State: {self.controller_state}\n'
                      f'Position: ({self.robot_x:.2f}, {self.robot_y:.2f})\n'
-                     f'Yaw: {math.degrees(self.robot_yaw):.1f}\n'
-                     f'Obstacles: {len(self.obstacles)}')
+                     f'Yaw: {math.degrees(self.robot_yaw):.1f}°\n'
+                     f'Obstacles: {len(self.obstacles)}\n'
+                     f'Scan points: {len(self.scan_points_x)}')
         self.state_text.set_text(state_text)
         self.state_text.set_bbox(dict(
             boxstyle='round',

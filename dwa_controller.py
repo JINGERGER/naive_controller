@@ -906,21 +906,42 @@ class DWANavController(Node):
 
                     # 紧急停止检测：如果障碍物太近，停止前进但允许旋转脱困
                     if self.check_emergency_stop():
-                        cmd_vel.linear.x = 0.0
-                        # 计算脱困旋转方向：使用方向锁定，避免左右摆动
-                        if self.last_turn_dir == 0:
-                            # 首次选择方向
-                            escape_direction = self.get_escape_direction()
-                            if escape_direction != 0:
-                                self.last_turn_dir = escape_direction
-                            else:
-                                self.last_turn_dir = 1  # 默认左转
+                        self.emergency_count = getattr(self, 'emergency_count', 0) + 1
                         
-                        cmd_vel.angular.z = self.last_turn_dir * 0.8  # 使用锁定方向
-                        self.get_logger().warn(
-                            f'Emergency! Rotating to escape '
-                            f'({"LEFT" if self.last_turn_dir > 0 else "RIGHT"})',
-                            throttle_duration_sec=0.5)
+                        # 如果旋转超过30个周期（约3秒）还没脱困，尝试后退
+                        if self.emergency_count > 30:
+                            # 检查后方是否有障碍
+                            back_clear = self.check_back_clear()
+                            if back_clear:
+                                cmd_vel.linear.x = -0.1  # 后退
+                                cmd_vel.angular.z = 0.0
+                                self.get_logger().warn(
+                                    f'Emergency! Backing up to escape (count={self.emergency_count})',
+                                    throttle_duration_sec=0.5)
+                            else:
+                                # 后方也有障碍，继续旋转
+                                cmd_vel.linear.x = 0.0
+                                if self.last_turn_dir == 0:
+                                    self.last_turn_dir = 1
+                                cmd_vel.angular.z = self.last_turn_dir * 0.8
+                                self.get_logger().warn(
+                                    f'Emergency! Trapped, rotating (count={self.emergency_count})',
+                                    throttle_duration_sec=0.5)
+                        else:
+                            # 先尝试旋转脱困
+                            cmd_vel.linear.x = 0.0
+                            if self.last_turn_dir == 0:
+                                escape_direction = self.get_escape_direction()
+                                self.last_turn_dir = escape_direction if escape_direction != 0 else 1
+                            
+                            cmd_vel.angular.z = self.last_turn_dir * 0.8
+                            self.get_logger().warn(
+                                f'Emergency! Rotating to escape '
+                                f'({"LEFT" if self.last_turn_dir > 0 else "RIGHT"})',
+                                throttle_duration_sec=0.5)
+                    else:
+                        # 脱离Emergency状态，重置计数
+                        self.emergency_count = 0
                     # 卡住恢复：只旋转，不前进（避免穿墙）
                     elif self.stuck_count > self.stuck_threshold:
                         # 如果已有方向锁定，使用锁定方向；否则选择新方向
@@ -1322,6 +1343,27 @@ class DWANavController(Node):
                     return False  # 前方有障碍
         
         return True  # 前方清晰
+    
+    def check_back_clear(self):
+        """检查后方是否有障碍物（用于后退脱困）"""
+        obstacle_radius = 0.15
+        check_distance = 0.5  # 检查后方0.5m
+        path_width = self.dwa_planner.robot_radius + obstacle_radius + 0.1
+        
+        for ox, oy in self.obstacles:
+            # 转换到机器人坐标系
+            dx = ox - self.current_x
+            dy = oy - self.current_y
+            local_x = dx * math.cos(-self.current_yaw) - dy * math.sin(-self.current_yaw)
+            local_y = dx * math.sin(-self.current_yaw) + dy * math.cos(-self.current_yaw)
+            
+            # 检查后方矩形区域（local_x < 0）
+            if local_x < obstacle_radius and local_x > -check_distance:
+                # 在后方，检查是否在路径上
+                if abs(local_y) < path_width:
+                    return False  # 后方有障碍
+        
+        return True  # 后方清晰
     
     def get_front_clear_distance(self):
         """获取前方最近障碍物的距离"""

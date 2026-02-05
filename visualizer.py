@@ -23,6 +23,10 @@ class Visualizer(Node):
     def __init__(self):
         super().__init__('visualizer')
 
+        # 声明参数
+        self.declare_parameter('map_size', 20.0)  # 地图尺寸（米），默认20x20
+        self.map_size = self.get_parameter('map_size').value
+
         # 机器人状态
         self.robot_x = 0.0
         self.robot_y = 0.0
@@ -120,9 +124,10 @@ class Visualizer(Node):
         self.ax.set_ylabel('Y (m)')
         self.ax.set_title('Robot Navigation Visualization')
         
-        # 固定坐标系为8x8，中心在(0,0)
-        self.ax.set_xlim(-4, 4)
-        self.ax.set_ylim(-4, 4)
+        # 固定坐标系，中心在(0,0)
+        half_size = self.map_size / 2
+        self.ax.set_xlim(-half_size, half_size)
+        self.ax.set_ylim(-half_size, half_size)
 
         # 绘图元素
         self.robot_plot, = self.ax.plot([], [], 'bo', markersize=10,
@@ -163,7 +168,7 @@ class Visualizer(Node):
         # 定时器更新显示
         self.timer = self.create_timer(0.1, self.update_plot)
 
-        self.get_logger().info('Visualizer initialized')
+        self.get_logger().info(f'Visualizer initialized (map: {self.map_size}x{self.map_size}m)')
 
     def quaternion_to_yaw(self, x, y, z, w):
         """四元数转yaw角"""

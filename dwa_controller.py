@@ -412,11 +412,12 @@ class DWANavController(Node):
         self.reach_time = None
         self.wait_duration = 3.0
 
-        # 卡住检测
+        # 卡住检测（放宽条件，避免误触发）
         self.stuck_count = 0
         self.last_x = 0.0
         self.last_y = 0.0
-        self.stuck_threshold = 10  # 连续10个周期没动就认为卡住了
+        self.stuck_threshold = 30  # 连续30个周期没动才认为卡住（3秒）
+        self.stuck_move_threshold = 0.01  # 移动阈值降低到1cm
         self.recovery_direction = 1  # 1=左转, -1=右转
         
         # 绕行方向锁定（防止左右震荡）
@@ -868,7 +869,7 @@ class DWANavController(Node):
                     moved = math.sqrt(
                         (self.current_x - self.last_x)**2 +
                         (self.current_y - self.last_y)**2)
-                    if moved < 0.02:  # 几乎没动
+                    if moved < self.stuck_move_threshold:  # 几乎没动
                         self.stuck_count += 1
                     else:
                         self.stuck_count = 0
@@ -928,120 +929,144 @@ class DWANavController(Node):
                         if self.stuck_count > self.stuck_threshold + 50:
                             self.stuck_count = 0
                     elif self.use_dwa and self.scan_received:
-                        # 使用DWA规划
-                        result = self.dwa_planner.plan(
-                            self.current_x,
-                            self.current_y,
-                            self.current_yaw,
-                            self.current_v,
-                            self.current_w,
-                            self.goal_x,
-                            self.goal_y,
-                            self.obstacles
-                        )
-                        best_v, best_w, trajectory, valid_count = result
-
-                        # === 方向锁定机制：防止左右震荡 ===
-                        # 检测是否需要锁定方向
-                        if abs(best_w) > 0.3:  # 有明显转向
-                            if self.bypass_direction == 0:
-                                # 首次选择方向，使用智能分析选择最优绕行方向
-                                self.bypass_direction = self.choose_bypass_direction()
-                                self.bypass_lock_count = self.bypass_lock_threshold
-                                self.get_logger().info(
-                                    f'[方向锁定] 智能选择: {"左绕" if self.bypass_direction > 0 else "右绕"}')
-                            elif self.bypass_lock_count > 0:
-                                # 方向已锁定，强制使用锁定方向
-                                if (best_w > 0 and self.bypass_direction < 0) or \
-                                   (best_w < 0 and self.bypass_direction > 0):
-                                    # DWA想换方向，但我们强制保持
-                                    best_w = self.bypass_direction * abs(best_w)
-                                    self.get_logger().info(
-                                        f'[方向锁定] 强制保持{"左绕" if self.bypass_direction > 0 else "右绕"}, '
-                                        f'剩余{self.bypass_lock_count}周期',
-                                        throttle_duration_sec=1.0)
-                        
-                        # 计算最近障碍物距离
-                        self.min_obstacle_dist = float('inf')
-                        for ox, oy in self.obstacles:
-                            obs_dist = math.sqrt(
-                                (ox - self.current_x)**2 + 
-                                (oy - self.current_y)**2)
-                            self.min_obstacle_dist = min(
-                                self.min_obstacle_dist, obs_dist)
-                        
-                        # 检测是否已绑过障碍物
-                        # 条件：距离在减少 且 前方清晰 且 远离障碍物
-                        bypass_complete = False
-                        if self.bypass_direction != 0:
-                            # 检查是否已绑过：距离减少 + 障碍物不在前方
-                            if distance < self.last_distance - 0.05 and \
-                               self.min_obstacle_dist > 0.8 and \
-                               self.check_front_clear():
-                                # 快速减少锁定计数
-                                self.bypass_lock_count = max(0, self.bypass_lock_count - 3)
-                                if self.bypass_lock_count < 10:
-                                    bypass_complete = True
-                        
-                        # 锁定计数递减
-                        if self.bypass_lock_count > 0:
-                            self.bypass_lock_count -= 1
+                        # === 检查是否前方完全无障碍物 ===
+                        # 如果前方2m内无障碍物，直接用简单比例控制
+                        front_clear_distance = self.get_front_clear_distance()
+                        if front_clear_distance > 2.0 and len(self.obstacles) < 5:
+                            # 前方畅通，使用简单比例控制（更高效）
+                            target_yaw = math.atan2(dy, dx)
+                            heading_error = self.normalize_angle(
+                                target_yaw - self.current_yaw)
                             
-                            # 如果靠近障碍物，延长锁定
-                            if self.min_obstacle_dist < 0.8:
-                                self.bypass_lock_count = max(
-                                    self.bypass_lock_count, 15)
+                            # 简单比例控制
+                            cmd_vel.linear.x = min(0.3, 0.5 * distance)
+                            cmd_vel.angular.z = self.clamp(
+                                1.5 * heading_error, -0.5, 0.5)
                             
-                            if self.bypass_lock_count == 0 or bypass_complete:
-                                # 解除锁定
-                                if self.min_obstacle_dist > 0.8 or bypass_complete:
-                                    self.bypass_direction = 0
-                                    self.get_logger().info(
-                                        f'[方向锁定] 解除锁定 (dist={distance:.2f}, obs={self.min_obstacle_dist:.1f}m)')
-                                else:
-                                    self.bypass_lock_count = 15
-                                    self.get_logger().info(
-                                        f'[方向锁定] 障碍物较近({self.min_obstacle_dist:.1f}m)，保持锁定')
-                        
-                        # 更新距离记录
-                        self.last_distance = distance
-                        
-                        # === 角速度平滑：防止剧烈震荡 ===
-                        max_angular_change = 0.5  # 每周期最大角速度变化
-                        angular_diff = best_w - self.last_angular_z
-                        if abs(angular_diff) > max_angular_change:
-                            best_w = self.last_angular_z + \
-                                max_angular_change * (1 if angular_diff > 0 else -1)
-                        self.last_angular_z = best_w
-
-                        # === 绕行时强制最小前进速度 ===
-                        if self.bypass_direction != 0 and self.check_front_clear():
-                            # 在绕行模式且前方清晰时，强制最小前进速度
-                            min_bypass_vel = 0.1
-                            if best_v < min_bypass_vel:
-                                best_v = min_bypass_vel
-                                self.get_logger().info(
-                                    f'[绕行] 强制最小前进速度 {min_bypass_vel}',
-                                    throttle_duration_sec=1.0)
-                        
-                        cmd_vel.linear.x = best_v
-                        cmd_vel.angular.z = best_w
-
-                        # 发布规划轨迹
-                        if trajectory is not None:
-                            self.publish_trajectory(trajectory)
-
-                        if distance > 0.2:
-                            bypass_str = ""
+                            # 重置绕行状态
                             if self.bypass_direction != 0:
-                                bypass_str = f', 锁定:{"左" if self.bypass_direction > 0 else "右"}'
+                                self.bypass_direction = 0
+                                self.bypass_lock_count = 0
+                            
                             self.get_logger().info(
-                                f'DWA: v={best_v:.2f}, w={best_w:.2f}, '
-                                f'dist={distance:.2f}, '
-                                f'obs={len(self.obstacles)}, '
-                                f'valid={valid_count}{bypass_str}',
-                                throttle_duration_sec=1.0
+                                f'[直行模式] 前方畅通({front_clear_distance:.1f}m), '
+                                f'v={cmd_vel.linear.x:.2f}, dist={distance:.2f}',
+                                throttle_duration_sec=1.0)
+                        else:
+                            # 使用DWA规划
+                            result = self.dwa_planner.plan(
+                                self.current_x,
+                                self.current_y,
+                                self.current_yaw,
+                                self.current_v,
+                                self.current_w,
+                                self.goal_x,
+                                self.goal_y,
+                                self.obstacles
                             )
+                            best_v, best_w, trajectory, valid_count = result
+
+                            # === 方向锁定机制：防止左右震荡 ===
+                            # 检测是否需要锁定方向
+                            if abs(best_w) > 0.3:  # 有明显转向
+                                if self.bypass_direction == 0:
+                                    # 首次选择方向，使用智能分析选择最优绕行方向
+                                    self.bypass_direction = self.choose_bypass_direction()
+                                    self.bypass_lock_count = self.bypass_lock_threshold
+                                    self.get_logger().info(
+                                        f'[方向锁定] 智能选择: {"左绕" if self.bypass_direction > 0 else "右绕"}')
+                                elif self.bypass_lock_count > 0:
+                                    # 方向已锁定，强制使用锁定方向
+                                    if (best_w > 0 and self.bypass_direction < 0) or \
+                                       (best_w < 0 and self.bypass_direction > 0):
+                                        # DWA想换方向，但我们强制保持
+                                        best_w = self.bypass_direction * abs(best_w)
+                                        self.get_logger().info(
+                                            f'[方向锁定] 强制保持{"左绕" if self.bypass_direction > 0 else "右绕"}, '
+                                            f'剩余{self.bypass_lock_count}周期',
+                                            throttle_duration_sec=1.0)
+                            
+                            # 计算最近障碍物距离
+                            self.min_obstacle_dist = float('inf')
+                            for ox, oy in self.obstacles:
+                                obs_dist = math.sqrt(
+                                    (ox - self.current_x)**2 + 
+                                    (oy - self.current_y)**2)
+                                self.min_obstacle_dist = min(
+                                    self.min_obstacle_dist, obs_dist)
+                            
+                            # 检测是否已绑过障碍物
+                            # 条件：距离在减少 且 前方清晰 且 远离障碍物
+                            bypass_complete = False
+                            if self.bypass_direction != 0:
+                                # 检查是否已绑过：距离减少 + 障碍物不在前方
+                                if distance < self.last_distance - 0.05 and \
+                                   self.min_obstacle_dist > 0.8 and \
+                                   self.check_front_clear():
+                                    # 快速减少锁定计数
+                                    self.bypass_lock_count = max(0, self.bypass_lock_count - 3)
+                                    if self.bypass_lock_count < 10:
+                                        bypass_complete = True
+                            
+                            # 锁定计数递减
+                            if self.bypass_lock_count > 0:
+                                self.bypass_lock_count -= 1
+                                
+                                # 如果靠近障碍物，延长锁定
+                                if self.min_obstacle_dist < 0.8:
+                                    self.bypass_lock_count = max(
+                                        self.bypass_lock_count, 15)
+                                
+                                if self.bypass_lock_count == 0 or bypass_complete:
+                                    # 解除锁定
+                                    if self.min_obstacle_dist > 0.8 or bypass_complete:
+                                        self.bypass_direction = 0
+                                        self.get_logger().info(
+                                            f'[方向锁定] 解除锁定 (dist={distance:.2f}, obs={self.min_obstacle_dist:.1f}m)')
+                                    else:
+                                        self.bypass_lock_count = 15
+                                        self.get_logger().info(
+                                            f'[方向锁定] 障碍物较近({self.min_obstacle_dist:.1f}m)，保持锁定')
+                            
+                            # 更新距离记录
+                            self.last_distance = distance
+                            
+                            # === 角速度平滑：防止剧烈震荡 ===
+                            max_angular_change = 0.5  # 每周期最大角速度变化
+                            angular_diff = best_w - self.last_angular_z
+                            if abs(angular_diff) > max_angular_change:
+                                best_w = self.last_angular_z + \
+                                    max_angular_change * (1 if angular_diff > 0 else -1)
+                            self.last_angular_z = best_w
+
+                            # === 绕行时强制最小前进速度 ===
+                            if self.bypass_direction != 0 and self.check_front_clear():
+                                # 在绕行模式且前方清晰时，强制最小前进速度
+                                min_bypass_vel = 0.1
+                                if best_v < min_bypass_vel:
+                                    best_v = min_bypass_vel
+                                    self.get_logger().info(
+                                        f'[绕行] 强制最小前进速度 {min_bypass_vel}',
+                                        throttle_duration_sec=1.0)
+                            
+                            cmd_vel.linear.x = best_v
+                            cmd_vel.angular.z = best_w
+
+                            # 发布规划轨迹
+                            if trajectory is not None:
+                                self.publish_trajectory(trajectory)
+
+                            if distance > 0.2:
+                                bypass_str = ""
+                                if self.bypass_direction != 0:
+                                    bypass_str = f', 锁定:{"左" if self.bypass_direction > 0 else "右"}'
+                                self.get_logger().info(
+                                    f'DWA: v={best_v:.2f}, w={best_w:.2f}, '
+                                    f'dist={distance:.2f}, '
+                                    f'obs={len(self.obstacles)}, '
+                                    f'valid={valid_count}{bypass_str}',
+                                    throttle_duration_sec=1.0
+                                )
                     else:
                         # 简单控制（无避障）
                         cmd_vel.linear.x = self.clamp(
@@ -1182,6 +1207,30 @@ class DWANavController(Node):
                     return False  # 前方有障碍
         
         return True  # 前方清晰
+    
+    def get_front_clear_distance(self):
+        """获取前方最近障碍物的距离"""
+        obstacle_radius = 0.15
+        path_width = self.dwa_planner.robot_radius + 0.1  # 稍微宽一点的检测范围
+        min_distance = float('inf')
+        
+        cos_yaw = math.cos(-self.current_yaw)
+        sin_yaw = math.sin(-self.current_yaw)
+        
+        for ox, oy in self.obstacles:
+            # 转换到机器人坐标系
+            dx = ox - self.current_x
+            dy = oy - self.current_y
+            local_x = dx * cos_yaw - dy * sin_yaw
+            local_y = dx * sin_yaw + dy * cos_yaw
+            
+            # 只考虑前方的障碍物（在路径宽度内）
+            if local_x > 0 and abs(local_y) < path_width:
+                # 计算到障碍物边缘的距离
+                edge_dist = local_x - obstacle_radius
+                min_distance = min(min_distance, edge_dist)
+        
+        return min_distance
 
     def choose_bypass_direction(self):
         """智能选择绕行方向 - 分析障碍物分布，选择更短的路径"""

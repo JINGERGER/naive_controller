@@ -932,7 +932,8 @@ class DWANavController(Node):
                         # === 检查是否前方完全无障碍物 ===
                         # 如果前方2m内无障碍物，直接用简单比例控制
                         front_clear_distance = self.get_front_clear_distance()
-                        if front_clear_distance > 2.0 and len(self.obstacles) < 5:
+                        # 只检查前方是否畅通，不管侧面有多少障碍物
+                        if front_clear_distance > 2.0:
                             # 前方畅通，使用简单比例控制（更高效）
                             target_yaw = math.atan2(dy, dx)
                             heading_error = self.normalize_angle(

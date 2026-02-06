@@ -264,6 +264,7 @@ class DWANavController(Node):
         # 纯运动模式（避免小速度下打滑）
         self.declare_parameter('pure_motion_mode', True)  # 是否启用纯旋转/纯直行模式
         self.declare_parameter('pure_motion_angle_threshold', 0.15)  # 纯运动模式角度阈值(弧度), 约8.6°
+        self.declare_parameter('debug_performance', False)  # 是否输出性能DEBUG日志
         self.declare_parameter('max_linear_acc', 0.2)
         self.declare_parameter('max_angular_acc', 1.0)
         self.declare_parameter('control_frequency', 10.0)
@@ -410,6 +411,15 @@ class DWANavController(Node):
         self.octomap_obstacles = []  # 从OctoMap获取的障碍物
         self.scan_received = False
 
+        # 性能统计
+        self.debug_performance = False
+        self.perf_scan_count = 0
+        self.perf_scan_time_total = 0.0
+        self.perf_dwa_count = 0
+        self.perf_dwa_time_total = 0.0
+        self.perf_loop_count = 0
+        self.perf_last_report = None
+        
         # 目标点（odom坐标系）
         self.goal_x = None
         self.goal_y = None
@@ -436,6 +446,9 @@ class DWANavController(Node):
         self.min_obstacle_dist = float('inf')  # 最近障碍物距离
         self.initial_goal_angle = None  # 初始目标角度（用于检测是否绑过障碍物）
 
+        # 读取性能调试开关
+        self.debug_performance = self.get_parameter('debug_performance').value
+        
         self.get_logger().info('DWA NavController initialized')
         self.get_logger().info(
             f'DWA Avoidance: {"ENABLED" if self.use_dwa else "DISABLED"}')
@@ -444,6 +457,8 @@ class DWANavController(Node):
             f'Scan FOV: ±{scan_fov_deg/2:.0f}° ({scan_fov_deg:.0f}° total)')
         self.get_logger().info(
             f'OctoMap Mode: {"ENABLED" if self.use_octomap else "DISABLED"}')
+        if self.debug_performance:
+            self.get_logger().info('Performance Debug: ENABLED (will report every 5s)')
 
     def normalize_angle(self, angle):
         """将角度归一化到[-π, π]范围"""
@@ -532,6 +547,10 @@ class DWANavController(Node):
 
     def scan_callback(self, msg):
         """激光雷达回调函数，转换障碍物到odom坐标系"""
+        if self.debug_performance:
+            import time
+            self._scan_start = time.time()
+            
         if not self.odom_received:
             return
 
@@ -588,6 +607,15 @@ class DWANavController(Node):
 
         self.obstacles = obstacles
         self.scan_received = True
+        
+        # 性能统计
+        if self.debug_performance:
+            import time
+            scan_end = time.time()
+            if hasattr(self, '_scan_start'):
+                scan_time = (scan_end - self._scan_start) * 1000
+                self.perf_scan_count += 1
+                self.perf_scan_time_total += scan_time
 
     def octomap_pointcloud_callback(self, msg):
         """
@@ -824,6 +852,11 @@ class DWANavController(Node):
 
     def control_loop(self):
         """控制循环，根据当前状态执行相应的控制"""
+        if self.debug_performance:
+            import time
+            loop_start = time.time()
+            self.perf_loop_count += 1
+            
         if not self.odom_received:
             return
 
@@ -906,7 +939,9 @@ class DWANavController(Node):
 
                     # 紧急停止检测：如果障碍物太近，停止前进但允许旋转脱困
                     is_emergency = self.check_emergency_stop()
+                    self._decision_path = 'normal'  # 默认路径
                     if is_emergency:
+                        self._decision_path = 'EMERGENCY'
                         self.emergency_count = getattr(self, 'emergency_count', 0) + 1
                         self.get_logger().info(
                             f'[DEBUG] Emergency检测=True, 最近障碍物边缘距离={self.min_obstacle_dist:.3f}m (阈值0.05m)',
@@ -969,6 +1004,7 @@ class DWANavController(Node):
                                 f'[Recovery] 锁定恢复方向: {"左" if direction > 0 else "右"}')
                         
                         # 纯旋转脱困（避免打滑）
+                        self._decision_path = 'STUCK_RECOVERY'
                         cmd_vel.linear.x = 0.0
                         cmd_vel.angular.z = direction * 0.6  # 温和转向
                         self.last_angular_z = cmd_vel.angular.z  # 更新平滑器
@@ -995,6 +1031,7 @@ class DWANavController(Node):
                             angle_threshold = self.get_parameter('pure_motion_angle_threshold').value
                             if abs(heading_error) > angle_threshold:
                                 # 角度偏差大，纯旋转（不前进）
+                                self._decision_path = 'STRAIGHT_ROTATE'
                                 cmd_vel.linear.x = 0.0
                                 cmd_vel.angular.z = self.clamp(
                                     2.0 * heading_error, -0.8, 0.8)
@@ -1004,6 +1041,7 @@ class DWANavController(Node):
                                     throttle_duration_sec=0.5)
                             else:
                                 # 角度偏差小，纯直行（不转向）
+                                self._decision_path = 'STRAIGHT_FORWARD'
                                 cmd_vel.linear.x = min(0.5, 0.5 * distance)
                                 cmd_vel.angular.z = 0.0
                                 self.get_logger().info(
@@ -1017,6 +1055,10 @@ class DWANavController(Node):
                                 self.bypass_lock_count = 0
                         else:
                             # 使用DWA规划
+                            if self.debug_performance:
+                                import time
+                                dwa_start = time.time()
+                                
                             result = self.dwa_planner.plan(
                                 self.current_x,
                                 self.current_y,
@@ -1028,6 +1070,11 @@ class DWANavController(Node):
                                 self.obstacles
                             )
                             best_v, best_w, trajectory, valid_count = result
+                            
+                            if self.debug_performance:
+                                dwa_time = (time.time() - dwa_start) * 1000
+                                self.perf_dwa_count += 1
+                                self.perf_dwa_time_total += dwa_time
 
                             # === 方向锁定机制：防止左右震荡 ===
                             # 检测是否需要锁定方向
@@ -1187,6 +1234,9 @@ class DWANavController(Node):
                                     cmd_vel.angular.z = best_w
                                     motion_mode = "DWA-组合"
 
+                            # 记录决策路径
+                            self._decision_path = motion_mode
+                            
                             # 发布规划轨迹
                             if trajectory is not None:
                                 self.publish_trajectory(trajectory)
@@ -1212,6 +1262,7 @@ class DWANavController(Node):
                         if abs(heading_error) > angle_threshold:
                             # 角度偏差大，纯旋转
                             cmd_vel.linear.x = 0.0
+                            self._decision_path = 'SIMPLE_ROTATE'
                             cmd_vel.angular.z = self.clamp(
                                 2.0 * heading_error,
                                 -0.8, 0.8
@@ -1227,6 +1278,7 @@ class DWANavController(Node):
                                 0.0,
                                 self.dwa_planner.max_linear_vel
                             )
+                            self._decision_path = 'SIMPLE_FORWARD'
                             cmd_vel.angular.z = 0.0
                             self.get_logger().info(
                                 f'[Simple-直行] dist={distance:.2f}m, '
@@ -1257,12 +1309,15 @@ class DWANavController(Node):
                 self.reach_time = None
                 self.get_logger().info('Ready for next goal')
 
-        # [DEBUG] 最终发布的速度命令
+        # [DEBUG] 最终发布的速度命令（包含决策路径）
         if self.state != ControllerState.IDLE and self.state != ControllerState.REACHED:
+            # 决策路径标识
+            decision_path = getattr(self, '_decision_path', 'unknown')
             self.get_logger().info(
                 f'[CMD_VEL] state={self.state.name}, '
                 f'linear.x={cmd_vel.linear.x:.3f}, '
-                f'angular.z={cmd_vel.angular.z:.3f}',
+                f'angular.z={cmd_vel.angular.z:.3f}, '
+                f'path={decision_path}',
                 throttle_duration_sec=0.3)
 
         # 应用最小速度阈值（克服电机死区）
@@ -1275,6 +1330,29 @@ class DWANavController(Node):
         state_msg = String()
         state_msg.data = self.state.name
         self.state_pub.publish(state_msg)
+        
+        # 性能统计报告（每5秒输出一次）
+        if self.debug_performance:
+            import time
+            now = time.time()
+            if self.perf_last_report is None:
+                self.perf_last_report = now
+            elif now - self.perf_last_report >= 5.0:
+                avg_scan = (self.perf_scan_time_total / self.perf_scan_count) if self.perf_scan_count > 0 else 0
+                avg_dwa = (self.perf_dwa_time_total / self.perf_dwa_count) if self.perf_dwa_count > 0 else 0
+                loop_hz = self.perf_loop_count / 5.0
+                self.get_logger().info(
+                    f'[PERF] 5s统计: Loop={loop_hz:.1f}Hz, '
+                    f'Scan={avg_scan:.1f}ms(n={self.perf_scan_count}), '
+                    f'DWA={avg_dwa:.1f}ms(n={self.perf_dwa_count}), '
+                    f'Obstacles={len(self.obstacles)}')
+                # 重置统计
+                self.perf_scan_count = 0
+                self.perf_scan_time_total = 0.0
+                self.perf_dwa_count = 0
+                self.perf_dwa_time_total = 0.0
+                self.perf_loop_count = 0
+                self.perf_last_report = now
 
     def check_emergency_stop(self):
         """检查是否需要紧急停止（障碍物太近）"""

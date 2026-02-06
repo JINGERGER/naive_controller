@@ -150,14 +150,19 @@ class Visualizer(Node):
             fig_width = self.screen_width / self.dpi
             fig_height = self.screen_height / self.dpi
         else:
-            fig_size = min(self.screen_width, self.screen_height) * self.window_scale / self.dpi
+            # 限制最大尺寸为8英寸，避免元素过大
+            fig_size = min(8.0, min(self.screen_width, self.screen_height) * self.window_scale / self.dpi)
             fig_width = fig_size
             fig_height = fig_size
         
-        # 自适应的绘图参数
-        self.marker_scale = max(1.0, self.scale_factor)
-        self.font_scale = max(8, int(12 * self.scale_factor))
-        self.line_scale = max(1.0, 2.0 * self.scale_factor)
+        # 自适应的绘图参数 - 使用更保守的缩放
+        # 基准：8英寸图形
+        base_fig_size = 8.0
+        actual_scale = min(1.5, fig_width / base_fig_size)  # 限制最大缩放1.5倍
+        
+        self.marker_scale = actual_scale
+        self.font_scale = max(8, min(14, int(10 * actual_scale)))  # 字体8-14
+        self.line_scale = max(1.0, min(2.5, 1.5 * actual_scale))  # 线宽1-2.5
         
         self.get_logger().info(
             f'Screen: {self.screen_width}x{self.screen_height}, DPI: {self.dpi:.0f}, '
@@ -194,35 +199,36 @@ class Visualizer(Node):
         self.ax.set_xlim(-half_size, half_size)
         self.ax.set_ylim(-half_size, half_size)
 
-        # 绘图元素 - 自适应大小
+        # 绘图元素 - 固定合理大小，不随窗口过度缩放
         self.robot_plot, = self.ax.plot([], [], 'bo', 
-                                         markersize=10 * self.marker_scale,
+                                         markersize=8,  # 固定大小
                                          label='Robot')
         self.trajectory_plot, = self.ax.plot([], [], 'b-', alpha=0.5,
-                                              linewidth=self.line_scale,
+                                              linewidth=1.5,
                                               label='Trajectory')
         self.goal_plot, = self.ax.plot([], [], 'r*', 
-                                        markersize=20 * self.marker_scale,
+                                        markersize=15,  # 固定大小
                                         label='Goal')
         self.dwa_trajectory_plot, = self.ax.plot([], [], 'g-', alpha=0.8,
-                                                  linewidth=self.line_scale,
+                                                  linewidth=1.5,
                                                   label='DWA Plan')
         self.robot_arrow = None
         
-        # 箭头尺寸（相对于地图尺寸）
-        self.arrow_length = 0.3 * (self.map_size / 10.0)
-        self.arrow_head_width = 0.15 * (self.map_size / 10.0)
-        self.arrow_head_length = 0.1 * (self.map_size / 10.0)
+        # 箭头尺寸（相对于地图尺寸，但有上限）
+        map_scale = min(1.5, self.map_size / 10.0)
+        self.arrow_length = 0.3 * map_scale
+        self.arrow_head_width = 0.12 * map_scale
+        self.arrow_head_length = 0.08 * map_scale
 
         # LaserScan 绘图元素（黑色点 - 所有scan）
         self.scan_plot, = self.ax.plot([], [], '.', color='black',
-                                        markersize=max(2, 2 * self.marker_scale), 
-                                        alpha=0.4,
+                                        markersize=1,  # 小点
+                                        alpha=0.3,
                                         label='LaserScan')
         # 前方120°的scan点（紫色 - 实际用于判断）
         self.front_scan_plot, = self.ax.plot([], [], '.', color='purple',
-                                              markersize=max(3, 3 * self.marker_scale), 
-                                              alpha=0.8,
+                                              markersize=2,  # 稍大
+                                              alpha=0.7,
                                               label='Front FOV')
         # LaserScan 射线（可选，默认关闭）
         self.scan_lines = None
@@ -231,17 +237,20 @@ class Visualizer(Node):
         # 障碍物绘图元素
         self.obstacle_patches = []
 
-        # 状态文本 - 自适应字体
+        # 状态文本 - 固定合理大小
         self.state_text = self.ax.text(
             0.02, 0.98, '', transform=self.ax.transAxes,
-            verticalalignment='top', fontsize=self.font_scale,
+            verticalalignment='top', fontsize=9,
             fontfamily='monospace',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
 
-        self.ax.legend(loc='upper right', fontsize=self.font_scale - 2)
+        # 图例放在右上角，紧凑显示
+        self.ax.legend(loc='upper right', fontsize=8, 
+                       framealpha=0.8, handlelength=1.0,
+                       labelspacing=0.3, borderpad=0.3)
         
         # 紧凑布局
-        self.fig.tight_layout()
+        self.fig.tight_layout(pad=0.5)
 
         # 定时器更新显示
         self.timer = self.create_timer(0.1, self.update_plot)

@@ -909,7 +909,7 @@ class DWANavController(Node):
                     if is_emergency:
                         self.emergency_count = getattr(self, 'emergency_count', 0) + 1
                         self.get_logger().info(
-                            f'[DEBUG] Emergency检测=True, 最近障碍物距离={self.min_obstacle_dist:.3f}m',
+                            f'[DEBUG] Emergency检测=True, 最近障碍物边缘距离={self.min_obstacle_dist:.3f}m (阈值0.05m)',
                             throttle_duration_sec=0.5)
                         
                         # 如果旋转超过30个周期（约3秒）还没脱困，尝试后退
@@ -1283,7 +1283,8 @@ class DWANavController(Node):
         emergency_edge_dist = 0.05
         
         min_edge_dist = float('inf')
-        closest_obstacle = None
+        emergency_obstacle = None
+        emergency_dist = None
         
         for ox, oy in self.obstacles:
             center_dist = math.sqrt(
@@ -1291,15 +1292,19 @@ class DWANavController(Node):
             edge_dist = center_dist - self.dwa_planner.robot_radius - obstacle_radius
             if edge_dist < min_edge_dist:
                 min_edge_dist = edge_dist
-                closest_obstacle = (ox, oy)
-            if edge_dist < emergency_edge_dist:
-                self.get_logger().debug(
-                    f'[Emergency] 触发! 障碍物({ox:.2f},{oy:.2f}) '
-                    f'边缘距离={edge_dist:.3f}m < {emergency_edge_dist}m')
-                return True
+            if edge_dist < emergency_edge_dist and emergency_obstacle is None:
+                # 记录第一个触发emergency的障碍物
+                emergency_obstacle = (ox, oy)
+                emergency_dist = edge_dist
         
         # 记录最近障碍物信息（用于调试）
         self.min_obstacle_dist = min_edge_dist
+        
+        if emergency_obstacle is not None:
+            self.get_logger().debug(
+                f'[Emergency] 触发! 障碍物({emergency_obstacle[0]:.2f},{emergency_obstacle[1]:.2f}) '
+                f'边缘距离={emergency_dist:.3f}m < {emergency_edge_dist}m')
+            return True
         return False
     
     def get_escape_direction(self):

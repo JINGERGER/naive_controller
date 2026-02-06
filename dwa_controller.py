@@ -272,9 +272,9 @@ class DWANavController(Node):
         self.declare_parameter('distance_threshold', 0.05)
         self.declare_parameter('max_linear_velocity', 0.5)  # Bunker Mini 最大1m/s，设置0.5m/s
         self.declare_parameter('max_angular_velocity', 1.0)
-        # 最小速度阈值（克服电机死区）
-        self.declare_parameter('min_linear_velocity', 0.05)  # 低于此值的线速度会被置0或提升
-        self.declare_parameter('min_angular_velocity', 0.15)  # 低于此值的角速度会被置0或提升
+        # 最小速度阈值（克服电机死区 - 实车测试值）
+        self.declare_parameter('min_linear_velocity', 0.1)  # 低于此值的线速度会被置0或提升
+        self.declare_parameter('min_angular_velocity', 0.3)  # 低于此值的角速度会被置0或提升
         # 纯运动模式（避免小速度下打滑）
         self.declare_parameter('pure_motion_mode', True)  # 是否启用纯旋转/纯直行模式
         # 纯旋转速度（提升旋转效率）
@@ -513,7 +513,6 @@ class DWANavController(Node):
                 grid[key] = (ox, oy)
         
         return list(grid.values())
-        return angle
 
     def quaternion_to_yaw(self, x, y, z, w):
         """从四元数转换为yaw角"""
@@ -1219,6 +1218,9 @@ class DWANavController(Node):
                             pure_motion = self.get_parameter('pure_motion_mode').value
                             motion_mode = "DWA"
                             
+                            # 获取最小速度阈值（用于后续判断）
+                            min_v_for_motion = self.get_parameter('min_linear_velocity').value
+                            
                             # 检查前方是否有障碍物（决定是否使用纯运动模式）
                             # 注意：如果正在绕行（bypass_direction != 0），不要切换到直行模式
                             front_clear_for_pure = self.min_obstacle_dist > 1.0 and self.bypass_direction == 0
@@ -1245,77 +1247,67 @@ class DWANavController(Node):
                                 else:
                                     # 航向偏差小 → 纯直行，重置方向锁
                                     self.last_turn_dir = 0
-                                    cmd_vel.linear.x = best_v if best_v > 0.05 else 0.2
+                                    cmd_vel.linear.x = best_v if best_v > min_v_for_motion else 0.2
                                     cmd_vel.angular.z = 0.0
                                     motion_mode = "纯直行"
                             else:
                                 # 有障碍：使用DWA避障
-                                # 避免小速度组合，检查前方障碍决定动作
-                                min_v_threshold = 0.1  # 线速度阈值
-                                min_w_threshold = 0.15  # 角速度阈值
+                                # === 优化后的防打滑逻辑 ===
+                                # 使用实车测试的最小速度值作为阈值
+                                min_v_threshold = self.get_parameter('min_linear_velocity').value
+                                min_w_threshold = self.get_parameter('min_angular_velocity').value
                                 pure_rot_speed = self.get_parameter('pure_rotation_speed').value
-                                slip_threshold = self.get_parameter('slip_prevention_linear_threshold').value
                                 
                                 # 检查前方是否畅通
                                 front_clear = self.check_front_clear()
                                 
-                                # === 防打滑逻辑 ===
-                                # 如果线速度较小但角速度不为0，容易打滑，强制纯运动
-                                if best_v < slip_threshold and abs(best_w) > 0.1:
-                                    # 低速+有角速度 → 强制纯旋转（避免打滑）
+                                # === 新的防打滑策略：只在极端情况下强制纯运动 ===
+                                # 1. 极低速+转向 → 纯旋转（真正的打滑风险）
+                                if best_v < min_v_threshold and abs(best_w) > min_w_threshold:
                                     cmd_vel.linear.x = 0.0
                                     if self.last_turn_dir == 0:
                                         if self.bypass_direction != 0:
                                             self.last_turn_dir = self.bypass_direction
                                         else:
                                             self.last_turn_dir = 1 if best_w >= 0 else -1
-                                    # 使用配置的纯旋转速度，或DWA建议的较大值
                                     cmd_vel.angular.z = self.last_turn_dir * max(pure_rot_speed, abs(best_w))
                                     motion_mode = "DWA-防滑纯旋转"
+                                
+                                # 2. 极低速+低角速度 → 根据前方决定
                                 elif best_v < min_v_threshold and abs(best_w) < min_w_threshold:
-                                    # 两者都很小 → 根据前方障碍决定
                                     if front_clear:
-                                        # 前方畅通 → 直行，重置方向锁
                                         self.last_turn_dir = 0
                                         cmd_vel.linear.x = 0.15
                                         cmd_vel.angular.z = 0.0
                                         motion_mode = "DWA-前方畅通直行"
                                     else:
-                                        # 前方有障碍 → 旋转，使用方向锁定避免摆动
                                         cmd_vel.linear.x = 0.0
                                         if self.last_turn_dir == 0:
-                                            # 首次选择方向，用DWA建议或bypass_direction
                                             if self.bypass_direction != 0:
                                                 self.last_turn_dir = self.bypass_direction
                                             else:
                                                 self.last_turn_dir = 1 if best_w >= 0 else -1
                                         cmd_vel.angular.z = self.last_turn_dir * pure_rot_speed
                                         motion_mode = "DWA-避障旋转"
-                                elif best_v < min_v_threshold and abs(best_w) >= min_w_threshold:
-                                    # 线速度小、角速度大 → 纯旋转（避障转向）
-                                    cmd_vel.linear.x = 0.0
-                                    # 确保旋转速度不低于配置值
-                                    w_sign = 1 if best_w >= 0 else -1
-                                    cmd_vel.angular.z = w_sign * max(pure_rot_speed, abs(best_w))
-                                    motion_mode = "DWA-纯旋转"
+                                
+                                # 3. 中低速（min_v ~ 0.2） + 转向 → 允许组合运动（不强制纯旋转）
+                                elif best_v >= min_v_threshold and best_v < 0.2 and abs(best_w) > 0.1:
+                                    # ✅ 关键改动：允许 DWA 的组合运动（0.15m/s + 0.5rad/s 是安全的）
+                                    cmd_vel.linear.x = best_v
+                                    cmd_vel.angular.z = best_w
+                                    motion_mode = "DWA-组合(中低速)"
+                                
+                                # 4. 纯直行场景
                                 elif best_v >= min_v_threshold and abs(best_w) < min_w_threshold:
-                                    # 线速度大、角速度小 → 纯直行
                                     cmd_vel.linear.x = best_v
                                     cmd_vel.angular.z = 0.0
                                     motion_mode = "DWA-纯直行"
+                                
+                                # 5. 正常速度组合运动
                                 else:
-                                    # 两者都够大 → 检查是否会打滑
-                                    if best_v >= slip_threshold:
-                                        # 线速度够大，允许组合
-                                        cmd_vel.linear.x = best_v
-                                        cmd_vel.angular.z = best_w
-                                        motion_mode = "DWA-组合"
-                                    else:
-                                        # 线速度不够大但角速度大 → 纯旋转
-                                        cmd_vel.linear.x = 0.0
-                                        w_sign = 1 if best_w >= 0 else -1
-                                        cmd_vel.angular.z = w_sign * max(pure_rot_speed, abs(best_w))
-                                        motion_mode = "DWA-防滑纯旋转"
+                                    cmd_vel.linear.x = best_v
+                                    cmd_vel.angular.z = best_w
+                                    motion_mode = "DWA-组合"
 
                             # 记录决策路径
                             self._decision_path = motion_mode

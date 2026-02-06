@@ -277,6 +277,10 @@ class DWANavController(Node):
         self.declare_parameter('min_angular_velocity', 0.15)  # 低于此值的角速度会被置0或提升
         # 纯运动模式（避免小速度下打滑）
         self.declare_parameter('pure_motion_mode', True)  # 是否启用纯旋转/纯直行模式
+        # 纯旋转速度（提升旋转效率）
+        self.declare_parameter('pure_rotation_speed', 0.6)  # 纯旋转时的角速度
+        # 防打滑线速度阈值（低于此值时禁止组合运动）
+        self.declare_parameter('slip_prevention_linear_threshold', 0.2)  # 线速度低于此值时，强制纯运动
         self.declare_parameter('pure_motion_angle_threshold', 0.15)  # 纯运动模式角度阈值(弧度), 约8.6°
         self.declare_parameter('debug_performance', False)  # 是否输出性能DEBUG日志
         self.declare_parameter('max_linear_acc', 0.2)
@@ -1223,7 +1227,9 @@ class DWANavController(Node):
                                         self.last_turn_dir = self.bypass_direction
                                     elif self.last_turn_dir == 0:
                                         self.last_turn_dir = 1 if heading_error_raw > 0 else -1
-                                    cmd_vel.angular.z = self.last_turn_dir * 0.5
+                                    # 使用配置的纯旋转速度（提升效率）
+                                    pure_rot_speed = self.get_parameter('pure_rotation_speed').value
+                                    cmd_vel.angular.z = self.last_turn_dir * pure_rot_speed
                                     motion_mode = f"纯旋转(偏差{math.degrees(heading_error):.0f}°,{'左' if self.last_turn_dir > 0 else '右'})"
                                 else:
                                     # 航向偏差小 → 纯直行，重置方向锁
@@ -1236,11 +1242,26 @@ class DWANavController(Node):
                                 # 避免小速度组合，检查前方障碍决定动作
                                 min_v_threshold = 0.1  # 线速度阈值
                                 min_w_threshold = 0.15  # 角速度阈值
+                                pure_rot_speed = self.get_parameter('pure_rotation_speed').value
+                                slip_threshold = self.get_parameter('slip_prevention_linear_threshold').value
                                 
                                 # 检查前方是否畅通
                                 front_clear = self.check_front_clear()
                                 
-                                if best_v < min_v_threshold and abs(best_w) < min_w_threshold:
+                                # === 防打滑逻辑 ===
+                                # 如果线速度较小但角速度不为0，容易打滑，强制纯运动
+                                if best_v < slip_threshold and abs(best_w) > 0.1:
+                                    # 低速+有角速度 → 强制纯旋转（避免打滑）
+                                    cmd_vel.linear.x = 0.0
+                                    if self.last_turn_dir == 0:
+                                        if self.bypass_direction != 0:
+                                            self.last_turn_dir = self.bypass_direction
+                                        else:
+                                            self.last_turn_dir = 1 if best_w >= 0 else -1
+                                    # 使用配置的纯旋转速度，或DWA建议的较大值
+                                    cmd_vel.angular.z = self.last_turn_dir * max(pure_rot_speed, abs(best_w))
+                                    motion_mode = "DWA-防滑纯旋转"
+                                elif best_v < min_v_threshold and abs(best_w) < min_w_threshold:
                                     # 两者都很小 → 根据前方障碍决定
                                     if front_clear:
                                         # 前方畅通 → 直行，重置方向锁
@@ -1257,12 +1278,14 @@ class DWANavController(Node):
                                                 self.last_turn_dir = self.bypass_direction
                                             else:
                                                 self.last_turn_dir = 1 if best_w >= 0 else -1
-                                        cmd_vel.angular.z = self.last_turn_dir * 0.4
+                                        cmd_vel.angular.z = self.last_turn_dir * pure_rot_speed
                                         motion_mode = "DWA-避障旋转"
                                 elif best_v < min_v_threshold and abs(best_w) >= min_w_threshold:
                                     # 线速度小、角速度大 → 纯旋转（避障转向）
                                     cmd_vel.linear.x = 0.0
-                                    cmd_vel.angular.z = best_w
+                                    # 确保旋转速度不低于配置值
+                                    w_sign = 1 if best_w >= 0 else -1
+                                    cmd_vel.angular.z = w_sign * max(pure_rot_speed, abs(best_w))
                                     motion_mode = "DWA-纯旋转"
                                 elif best_v >= min_v_threshold and abs(best_w) < min_w_threshold:
                                     # 线速度大、角速度小 → 纯直行
@@ -1270,10 +1293,18 @@ class DWANavController(Node):
                                     cmd_vel.angular.z = 0.0
                                     motion_mode = "DWA-纯直行"
                                 else:
-                                    # 两者都够大 → 允许组合
-                                    cmd_vel.linear.x = best_v
-                                    cmd_vel.angular.z = best_w
-                                    motion_mode = "DWA-组合"
+                                    # 两者都够大 → 检查是否会打滑
+                                    if best_v >= slip_threshold:
+                                        # 线速度够大，允许组合
+                                        cmd_vel.linear.x = best_v
+                                        cmd_vel.angular.z = best_w
+                                        motion_mode = "DWA-组合"
+                                    else:
+                                        # 线速度不够大但角速度大 → 纯旋转
+                                        cmd_vel.linear.x = 0.0
+                                        w_sign = 1 if best_w >= 0 else -1
+                                        cmd_vel.angular.z = w_sign * max(pure_rot_speed, abs(best_w))
+                                        motion_mode = "DWA-防滑纯旋转"
 
                             # 记录决策路径
                             self._decision_path = motion_mode

@@ -106,25 +106,39 @@ class DWAPlanner:
 
         min_dist = float('inf')
         obstacle_radius = 0.15  # 障碍物半径
+        collision_threshold = 0.05  # 5cm碰撞缓冲
 
-        # 检查整条轨迹的每个点
+        # 检查整条轨迹的每个点（优化：提前退出）
         for tx, ty, _ in trajectory:
             for ox, oy in obstacles:
-                # 机器人边缘到障碍物边缘的距离
-                center_dist = math.sqrt((tx - ox)**2 + (ty - oy)**2)
+                # 快速距离检查（避免sqrt）
+                dx = tx - ox
+                dy = ty - oy
+                dist_sq = dx*dx + dy*dy
+                
+                # 如果距离平方大于安全距离平方的4倍，跳过精确计算
+                safe_dist_sq = (self.robot_radius + obstacle_radius + self.safe_distance) ** 2
+                if dist_sq > safe_dist_sq * 4:
+                    continue
+                
+                # 精确计算边缘距离
+                center_dist = math.sqrt(dist_sq)
                 edge_dist = center_dist - self.robot_radius - obstacle_radius
+                
+                # 碰撞检测：提前退出
+                if edge_dist < collision_threshold:
+                    return float('inf')
+                
                 if edge_dist < min_dist:
                     min_dist = edge_dist
-
-        # 碰撞检测：边缘距离小于0就是碰撞
-        if min_dist < 0.05:  # 5cm缓冲
-            return float('inf')
 
         # 安全距离内增加代价
         if min_dist < self.safe_distance:
             return 3.0 / max(min_dist, 0.01)
 
-        # 距离越近代价越高
+        # 距离越近代价越高（如果没有近距离障碍物，返回低代价）
+        if min_dist == float('inf'):
+            return 0.0
         return 0.5 / min_dist
     
     def calc_goal_cost(self, trajectory, goal_x, goal_y):
@@ -466,6 +480,27 @@ class DWANavController(Node):
             angle -= 2.0 * math.pi
         while angle < -math.pi:
             angle += 2.0 * math.pi
+    
+    def downsample_obstacles(self, obstacles, grid_size=0.15):
+        """
+        使用网格法对障碍物进行下采样
+        每个grid_size×grid_size的格子只保留一个障碍物
+        """
+        if not obstacles:
+            return obstacles
+        
+        grid = {}
+        for ox, oy in obstacles:
+            # 计算网格索引
+            gx = int(ox / grid_size)
+            gy = int(oy / grid_size)
+            key = (gx, gy)
+            
+            # 每个格子只保留一个点（第一个遇到的）
+            if key not in grid:
+                grid[key] = (ox, oy)
+        
+        return list(grid.values())
         return angle
 
     def quaternion_to_yaw(self, x, y, z, w):
@@ -605,6 +640,11 @@ class DWANavController(Node):
             obstacles.append((x_odom, y_odom))
             angle += msg.angle_increment
 
+        # === 障碍物下采样（提升DWA性能）===
+        # 使用网格法将障碍物数量从~200减少到~50
+        if len(obstacles) > 50:
+            obstacles = self.downsample_obstacles(obstacles, grid_size=0.15)
+        
         self.obstacles = obstacles
         self.scan_received = True
         

@@ -2,8 +2,6 @@
 """
 简单的2D可视化工具
 实时显示机器人位置、轨迹、目标点和障碍物
-
-支持自适应分辨率显示
 """
 
 import rclpy
@@ -12,27 +10,11 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
-import matplotlib
-matplotlib.use('TkAgg')  # 使用TkAgg后端支持窗口调整
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.collections import PatchCollection, LineCollection
 import math
 import numpy as np
-
-
-def get_screen_dpi():
-    """获取屏幕DPI，用于自适应缩放"""
-    try:
-        import tkinter as tk
-        root = tk.Tk()
-        dpi = root.winfo_fpixels('1i')
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        root.destroy()
-        return dpi, screen_width, screen_height
-    except Exception:
-        return 96, 1920, 1080  # 默认值
 
 
 class Visualizer(Node):
@@ -43,19 +25,7 @@ class Visualizer(Node):
 
         # 声明参数
         self.declare_parameter('map_size', 20.0)  # 地图尺寸（米），默认20x20
-        self.declare_parameter('fullscreen', False)  # 是否全屏
-        self.declare_parameter('window_scale', 0.7)  # 窗口占屏幕比例 (0.5-1.0)
-        
         self.map_size = self.get_parameter('map_size').value
-        self.fullscreen = self.get_parameter('fullscreen').value
-        self.window_scale = self.get_parameter('window_scale').value
-        
-        # 获取屏幕信息
-        self.dpi, self.screen_width, self.screen_height = get_screen_dpi()
-        
-        # 计算自适应的尺寸参数
-        self.base_size = min(self.screen_width, self.screen_height) / self.dpi
-        self.scale_factor = self.base_size / 10.0  # 相对于10英寸基准的缩放
 
         # 机器人状态
         self.robot_x = 0.0
@@ -89,7 +59,7 @@ class Visualizer(Node):
         # 前方120度 (±60°) 的scan点（用于实际判断）
         self.front_scan_x = []
         self.front_scan_y = []
-        self.scan_fov = math.radians(180)  # 前方180度 (±90°)
+        self.scan_fov = math.radians(120)  # 前方120度
         self.show_scan = True  # 是否显示 scan 数据
 
         # 订阅话题
@@ -145,90 +115,40 @@ class Visualizer(Node):
             10
         )
 
-        # 计算自适应的图形尺寸
-        if self.fullscreen:
-            fig_width = self.screen_width / self.dpi
-            fig_height = self.screen_height / self.dpi
-        else:
-            # 限制最大尺寸为8英寸，避免元素过大
-            fig_size = min(8.0, min(self.screen_width, self.screen_height) * self.window_scale / self.dpi)
-            fig_width = fig_size
-            fig_height = fig_size
-        
-        # 自适应的绘图参数 - 使用更保守的缩放
-        # 基准：8英寸图形
-        base_fig_size = 8.0
-        actual_scale = min(1.5, fig_width / base_fig_size)  # 限制最大缩放1.5倍
-        
-        self.marker_scale = actual_scale
-        self.font_scale = max(8, min(14, int(10 * actual_scale)))  # 字体8-14
-        self.line_scale = max(1.0, min(2.5, 1.5 * actual_scale))  # 线宽1-2.5
-        
-        self.get_logger().info(
-            f'Screen: {self.screen_width}x{self.screen_height}, DPI: {self.dpi:.0f}, '
-            f'Scale: {self.scale_factor:.2f}')
-        
         # 设置matplotlib为交互模式
         plt.ion()
-        self.fig, self.ax = plt.subplots(figsize=(fig_width, fig_height), dpi=self.dpi)
-        
-        # 尝试最大化窗口
-        try:
-            mng = plt.get_current_fig_manager()
-            if self.fullscreen:
-                mng.full_screen_toggle()
-            else:
-                # 尝试不同的后端方法来调整窗口
-                if hasattr(mng, 'window'):
-                    if hasattr(mng.window, 'state'):
-                        mng.window.state('zoomed')  # TkAgg
-                elif hasattr(mng, 'resize'):
-                    mng.resize(int(fig_width * self.dpi), int(fig_height * self.dpi))
-        except Exception as e:
-            self.get_logger().debug(f'Window resize not supported: {e}')
-        
+        self.fig, self.ax = plt.subplots(figsize=(10, 10))
         self.ax.set_aspect('equal')
         self.ax.grid(True, alpha=0.3)
-        self.ax.set_xlabel('X (m)', fontsize=self.font_scale)
-        self.ax.set_ylabel('Y (m)', fontsize=self.font_scale)
-        self.ax.set_title('Robot Navigation Visualization', fontsize=self.font_scale + 2)
-        self.ax.tick_params(axis='both', labelsize=self.font_scale - 2)
+        self.ax.set_xlabel('X (m)')
+        self.ax.set_ylabel('Y (m)')
+        self.ax.set_title('Robot Navigation Visualization')
         
         # 固定坐标系，中心在(0,0)
         half_size = self.map_size / 2
         self.ax.set_xlim(-half_size, half_size)
         self.ax.set_ylim(-half_size, half_size)
 
-        # 绘图元素 - 固定合理大小，不随窗口过度缩放
-        self.robot_plot, = self.ax.plot([], [], 'bo', 
-                                         markersize=8,  # 固定大小
+        # 绘图元素
+        self.robot_plot, = self.ax.plot([], [], 'bo', markersize=10,
                                          label='Robot')
         self.trajectory_plot, = self.ax.plot([], [], 'b-', alpha=0.5,
-                                              linewidth=1.5,
+                                              linewidth=2,
                                               label='Trajectory')
-        self.goal_plot, = self.ax.plot([], [], 'r*', 
-                                        markersize=15,  # 固定大小
+        self.goal_plot, = self.ax.plot([], [], 'r*', markersize=20,
                                         label='Goal')
         self.dwa_trajectory_plot, = self.ax.plot([], [], 'g-', alpha=0.8,
-                                                  linewidth=1.5,
+                                                  linewidth=2,
                                                   label='DWA Plan')
         self.robot_arrow = None
-        
-        # 箭头尺寸（相对于地图尺寸，但有上限）
-        map_scale = min(1.5, self.map_size / 10.0)
-        self.arrow_length = 0.3 * map_scale
-        self.arrow_head_width = 0.12 * map_scale
-        self.arrow_head_length = 0.08 * map_scale
 
         # LaserScan 绘图元素（黑色点 - 所有scan）
         self.scan_plot, = self.ax.plot([], [], '.', color='black',
-                                        markersize=1,  # 小点
-                                        alpha=0.3,
+                                        markersize=2, alpha=0.4,
                                         label='LaserScan')
         # 前方120°的scan点（紫色 - 实际用于判断）
         self.front_scan_plot, = self.ax.plot([], [], '.', color='purple',
-                                              markersize=2,  # 稍大
-                                              alpha=0.7,
+                                              markersize=3, alpha=0.8,
                                               label='Front FOV')
         # LaserScan 射线（可选，默认关闭）
         self.scan_lines = None
@@ -237,37 +157,18 @@ class Visualizer(Node):
         # 障碍物绘图元素
         self.obstacle_patches = []
 
-        # 状态文本 - 固定合理大小
+        # 状态文本
         self.state_text = self.ax.text(
             0.02, 0.98, '', transform=self.ax.transAxes,
-            verticalalignment='top', fontsize=9,
-            fontfamily='monospace',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+            verticalalignment='top', fontsize=12,
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
-        # 图例放在右上角，紧凑显示
-        self.ax.legend(loc='upper right', fontsize=8, 
-                       framealpha=0.8, handlelength=1.0,
-                       labelspacing=0.3, borderpad=0.3)
-        
-        # 紧凑布局
-        self.fig.tight_layout(pad=0.5)
+        self.ax.legend(loc='upper right')
 
         # 定时器更新显示
         self.timer = self.create_timer(0.1, self.update_plot)
 
-        # 添加窗口resize事件处理
-        self.fig.canvas.mpl_connect('resize_event', self.on_resize)
-        
-        self.get_logger().info(
-            f'Visualizer initialized: map={self.map_size}x{self.map_size}m, '
-            f'fig={fig_width:.1f}x{fig_height:.1f}in')
-    
-    def on_resize(self, event):
-        """窗口大小改变时重新调整布局"""
-        try:
-            self.fig.tight_layout()
-        except Exception:
-            pass
+        self.get_logger().info(f'Visualizer initialized (map: {self.map_size}x{self.map_size}m)')
 
     def quaternion_to_yaw(self, x, y, z, w):
         """四元数转yaw角"""
@@ -332,7 +233,7 @@ class Visualizer(Node):
         angle = msg.angle_min
         cos_yaw = math.cos(self.robot_yaw)
         sin_yaw = math.sin(self.robot_yaw)
-        half_fov = self.scan_fov / 2  # ±90°
+        half_fov = self.scan_fov / 2  # ±60°
 
         for r in msg.ranges:
             # 跳过无效数据
@@ -471,13 +372,13 @@ class Visualizer(Node):
         if self.robot_arrow is not None:
             self.robot_arrow.remove()
 
-        # 绘制机器人朝向箭头（自适应大小）
-        dx = self.arrow_length * math.cos(self.robot_yaw)
-        dy = self.arrow_length * math.sin(self.robot_yaw)
+        # 绘制机器人朝向箭头
+        arrow_length = 0.3
+        dx = arrow_length * math.cos(self.robot_yaw)
+        dy = arrow_length * math.sin(self.robot_yaw)
         self.robot_arrow = self.ax.arrow(
             self.robot_x, self.robot_y, dx, dy,
-            head_width=self.arrow_head_width, 
-            head_length=self.arrow_head_length,
+            head_width=0.15, head_length=0.1,
             fc=arrow_color, ec=arrow_color, alpha=0.7
         )
 

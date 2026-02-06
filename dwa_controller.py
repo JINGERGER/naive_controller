@@ -298,6 +298,9 @@ class DWANavController(Node):
         self.declare_parameter('octomap_height_max', 1.0)  # 提取障碍物的最大高度
         self.declare_parameter('octomap_resolution', 0.1)  # 下采样分辨率
         self.declare_parameter('octomap_range', 5.0)  # 只处理此范围内的障碍物
+        # 激光雷达相对于车辆中心的偏移量
+        self.declare_parameter('lidar_offset_x', 0.30)  # 前方30cm
+        self.declare_parameter('lidar_offset_y', 0.0)   # 左右居中
 
         # 获取参数
         self.angle_threshold = self.get_parameter(
@@ -316,6 +319,8 @@ class DWANavController(Node):
         self.octomap_height_max = self.get_parameter('octomap_height_max').value
         self.octomap_resolution = self.get_parameter('octomap_resolution').value
         self.octomap_range = self.get_parameter('octomap_range').value
+        self.lidar_offset_x = self.get_parameter('lidar_offset_x').value
+        self.lidar_offset_y = self.get_parameter('lidar_offset_y').value
 
         # DWA配置（优化绕行能力）
         dwa_config = {
@@ -473,6 +478,8 @@ class DWANavController(Node):
         scan_fov_deg = math.degrees(self.get_parameter('scan_fov').value)
         self.get_logger().info(
             f'Scan FOV: ±{scan_fov_deg/2:.0f}° ({scan_fov_deg:.0f}° total)')
+        self.get_logger().info(
+            f'LiDAR Offset: x={self.lidar_offset_x:.2f}m, y={self.lidar_offset_y:.2f}m')
         self.get_logger().info(
             f'OctoMap Mode: {"ENABLED" if self.use_octomap else "DISABLED"}')
         if self.debug_performance:
@@ -632,9 +639,13 @@ class DWANavController(Node):
                 angle += msg.angle_increment
                 continue
 
-            # 转换到base_link坐标系
-            x_base = r * math.cos(angle)
-            y_base = r * math.sin(angle)
+            # 转换到base_link坐标系（激光雷达原始数据）
+            x_lidar = r * math.cos(angle)
+            y_lidar = r * math.sin(angle)
+            
+            # 补偿激光雷达偏移量（从激光雷达坐标系转到车辆中心坐标系）
+            x_base = x_lidar + self.lidar_offset_x
+            y_base = y_lidar + self.lidar_offset_y
 
             # 转换到odom坐标系
             cos_yaw = math.cos(self.current_yaw)

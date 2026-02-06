@@ -905,8 +905,12 @@ class DWANavController(Node):
                         self.last_y = self.current_y
 
                     # 紧急停止检测：如果障碍物太近，停止前进但允许旋转脱困
-                    if self.check_emergency_stop():
+                    is_emergency = self.check_emergency_stop()
+                    if is_emergency:
                         self.emergency_count = getattr(self, 'emergency_count', 0) + 1
+                        self.get_logger().info(
+                            f'[DEBUG] Emergency检测=True, 最近障碍物距离={self.min_obstacle_dist:.3f}m',
+                            throttle_duration_sec=0.5)
                         
                         # 如果旋转超过30个周期（约3秒）还没脱困，尝试后退
                         if self.emergency_count > 30:
@@ -943,8 +947,12 @@ class DWANavController(Node):
                         # 脱离Emergency状态，重置计数
                         self.emergency_count = 0
                     
+                    # 如果是紧急状态，跳过后续所有逻辑（防止被覆盖）
+                    if is_emergency:
+                        # 已经在上面处理过了，直接跳过
+                        self.get_logger().debug('[DEBUG] 紧急状态，跳过DWA/Simple模式')
                     # 卡住恢复：只旋转，不前进（避免穿墙）
-                    if not self.check_emergency_stop() and self.stuck_count > self.stuck_threshold:
+                    elif self.stuck_count > self.stuck_threshold:
                         # 如果已有方向锁定，使用锁定方向；否则选择新方向
                         if self.bypass_direction != 0:
                             direction = self.bypass_direction
@@ -972,7 +980,7 @@ class DWANavController(Node):
                         # 重置卡住计数（但不换方向，保持锁定）
                         if self.stuck_count > self.stuck_threshold + 50:
                             self.stuck_count = 0
-                    elif not self.check_emergency_stop() and self.use_dwa and self.scan_received:
+                    elif self.use_dwa and self.scan_received:
                         # === 检查是否前方完全无障碍物 ===
                         # 如果前方2m内无障碍物，直接用简单比例控制
                         front_clear_distance = self.get_front_clear_distance()
@@ -1274,12 +1282,24 @@ class DWANavController(Node):
         # 边缘距离小于5cm就紧急停止
         emergency_edge_dist = 0.05
         
+        min_edge_dist = float('inf')
+        closest_obstacle = None
+        
         for ox, oy in self.obstacles:
             center_dist = math.sqrt(
                 (ox - self.current_x)**2 + (oy - self.current_y)**2)
             edge_dist = center_dist - self.dwa_planner.robot_radius - obstacle_radius
+            if edge_dist < min_edge_dist:
+                min_edge_dist = edge_dist
+                closest_obstacle = (ox, oy)
             if edge_dist < emergency_edge_dist:
+                self.get_logger().debug(
+                    f'[Emergency] 触发! 障碍物({ox:.2f},{oy:.2f}) '
+                    f'边缘距离={edge_dist:.3f}m < {emergency_edge_dist}m')
                 return True
+        
+        # 记录最近障碍物信息（用于调试）
+        self.min_obstacle_dist = min_edge_dist
         return False
     
     def get_escape_direction(self):

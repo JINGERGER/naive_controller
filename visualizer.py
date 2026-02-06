@@ -89,7 +89,7 @@ class Visualizer(Node):
         # 前方120度 (±60°) 的scan点（用于实际判断）
         self.front_scan_x = []
         self.front_scan_y = []
-        self.scan_fov = math.radians(120)  # 前方120度
+        self.scan_fov = math.radians(180)  # 前方180度 (±90°)
         self.show_scan = True  # 是否显示 scan 数据
 
         # 订阅话题
@@ -332,7 +332,7 @@ class Visualizer(Node):
         angle = msg.angle_min
         cos_yaw = math.cos(self.robot_yaw)
         sin_yaw = math.sin(self.robot_yaw)
-        half_fov = self.scan_fov / 2  # ±60°
+        half_fov = self.scan_fov / 2  # ±90°
 
         for r in msg.ranges:
             # 跳过无效数据

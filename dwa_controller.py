@@ -272,7 +272,7 @@ class DWANavController(Node):
         self.declare_parameter('robot_radius', 0.45)
         self.declare_parameter('safe_distance', 0.2)
         self.declare_parameter('use_dwa', True)  # 是否启用DWA避障
-        self.declare_parameter('scan_fov', 2.094)  # scan视野角度(弧度), 默认±60°=120°总视野
+        self.declare_parameter('scan_fov', 3.14159)  # scan视野角度(弧度), 默认±90°=180°总视野
         self.declare_parameter('use_octomap', False)  # 是否使用OctoMap障碍物
         self.declare_parameter('octomap_topic', '/octomap_point_cloud_centers')  # OctoMap点云话题
         self.declare_parameter('octomap_height_min', -0.1)  # 提取障碍物的最小高度
@@ -545,7 +545,7 @@ class DWANavController(Node):
         angle = msg.angle_min
         
         # === 只考虑前方扇形区域 ===
-        # scan_fov: 前方 ±120° = 240° 总视野（可通过参数调整）
+        # scan_fov: 前方 ±90° = 180° 总视野（可通过参数调整）
         scan_fov = self.get_parameter('scan_fov').value
         half_fov = scan_fov / 2
 
